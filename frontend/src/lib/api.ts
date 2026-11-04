@@ -6,6 +6,7 @@ export type Annotation = { id: string; paragraphId: string | null; page: number;
 export type Note = { id: string; paragraphId: string | null; page: number; selectedText: string; content: string };
 export type Interaction = { id: string; question: string; answer: string; paragraphId: string | null; page: number | null; inputMode: "text" | "voice"; createdAt: string };
 export type Vocabulary = { id: string; word: string; meaning: string; context: string; sourceSentence: string; page: number; reviewStatus: string; nextReviewAt: string };
+export type QuizQuestion = { id: string; kind: string; prompt: string; options: string[]; attempt: null | { answer: string; score: number; feedback: string } };
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, init);

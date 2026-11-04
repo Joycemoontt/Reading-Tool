@@ -117,3 +117,25 @@ class Vocabulary(Base):
     interval_days: Mapped[int] = mapped_column(Integer, default=0)
     next_review_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class QuizQuestion(Base):
+    __tablename__ = "quiz_questions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(30))
+    prompt: Mapped[str] = mapped_column(Text)
+    options_json: Mapped[str] = mapped_column(Text, default="[]")
+    reference_answer: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class QuizAttempt(Base):
+    __tablename__ = "quiz_attempts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    question_id: Mapped[str] = mapped_column(ForeignKey("quiz_questions.id", ondelete="CASCADE"), index=True)
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
+    answer: Mapped[str] = mapped_column(Text)
+    score: Mapped[float] = mapped_column(Float)
+    feedback: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

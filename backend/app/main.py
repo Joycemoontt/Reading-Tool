@@ -1,4 +1,5 @@
 import os
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,7 +17,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from .database import Base, DATA_DIR, SessionLocal, engine
 from .llm import generate, translate_batch
-from .models import Annotation, AudioProgress, Interaction, Note, Paper, Paragraph, ReadingProgress, SpeechText, Translation, Vocabulary
+from .models import Annotation, AudioProgress, Interaction, Note, Paper, Paragraph, ReadingProgress, SpeechText, Translation, Vocabulary, QuizQuestion, QuizAttempt
 from .parser import extract_paragraphs
 
 Base.metadata.create_all(engine)
@@ -115,7 +116,7 @@ def paper_file(paper_id: str, session: Session = Depends(db)):
 @app.delete("/api/papers/{paper_id}", status_code=204)
 def delete_paper(paper_id: str, session: Session = Depends(db)):
     get_paper(session, paper_id)
-    for model in (Annotation, Note, Interaction, ReadingProgress, AudioProgress, Vocabulary):
+    for model in (Annotation, Note, Interaction, ReadingProgress, AudioProgress, Vocabulary, QuizAttempt, QuizQuestion):
         session.query(model).filter_by(paper_id=paper_id).delete()
     ids = list(session.scalars(select(Paragraph.id).where(Paragraph.paper_id == paper_id)))
     if ids:
@@ -383,7 +384,6 @@ async def add_vocabulary(paper_id: str, data: VocabularyIn, session: Session = D
     prompt = ("请用 JSON 对象回答，字段 meaning 为简短中文含义，context 为此论文语境中的具体含义。"
               "如果上下文不足，请明确写出。\n"
               f"单词：{data.word}\n原句：{data.sourceSentence[:1000]}\n段落：{paragraph.text if paragraph else ''}")
-    import json
     try:
         explanation = json.loads(await generate(prompt, json_mode=True))
     except json.JSONDecodeError as exc:
@@ -421,3 +421,91 @@ def delete_vocabulary(paper_id: str, item_id: str, session: Session = Depends(db
         raise HTTPException(404, "词汇不存在")
     session.delete(item)
     session.commit()
+
+
+def quiz_data(question: QuizQuestion, attempt: QuizAttempt | None = None):
+    return {"id": question.id, "kind": question.kind, "prompt": question.prompt,
+            "options": json.loads(question.options_json),
+            "attempt": None if not attempt else {"answer": attempt.answer, "score": attempt.score,
+                                                 "feedback": attempt.feedback}}
+
+
+@app.get("/api/papers/{paper_id}/quiz")
+def list_quiz(paper_id: str, session: Session = Depends(db)):
+    get_paper(session, paper_id)
+    questions = session.scalars(select(QuizQuestion).where(QuizQuestion.paper_id == paper_id)
+                                .order_by(QuizQuestion.created_at.desc())).all()
+    attempts = {a.question_id: a for a in session.scalars(select(QuizAttempt).where(QuizAttempt.paper_id == paper_id)
+                                                  .order_by(QuizAttempt.created_at)).all()}
+    return [quiz_data(q, attempts.get(q.id)) for q in questions]
+
+
+@app.post("/api/papers/{paper_id}/quiz/generate")
+async def generate_quiz(paper_id: str, session: Session = Depends(db)):
+    paper = get_paper(session, paper_id)
+    paragraphs = session.scalars(select(Paragraph).where(Paragraph.paper_id == paper_id)
+                                 .order_by(Paragraph.order).limit(100)).all()
+    if not paragraphs:
+        raise HTTPException(400, "论文没有可用的文本段落")
+    notes = session.scalars(select(Note).where(Note.paper_id == paper_id).limit(20)).all()
+    vocabulary = session.scalars(select(Vocabulary).where(Vocabulary.paper_id == paper_id).limit(20)).all()
+    source = "\n".join(p.text for p in paragraphs)[:18000]
+    prompt = ("根据以下论文内容生成 3 道理解题：一题 multiple_choice（四个选项，正确答案只写选项字母 A/B/C/D），"
+              "一题 concept，一题 short_answer。只返回 JSON 数组，每项包含 kind、prompt、options（非选择题为空数组）、"
+              "reference_answer。不要问资料中没有依据的结论。\n"
+              f"论文标题：{paper.title}\n原文：{source}\n"
+              f"用户笔记：{[n.content for n in notes]}\n重点词汇：{[v.word for v in vocabulary]}")
+    try:
+        generated = json.loads(await generate(prompt, json_mode=True))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(502, "测试题格式无效，请重试") from exc
+    if not isinstance(generated, list):
+        raise HTTPException(502, "测试题格式无效，请重试")
+    created = []
+    for data in generated[:5]:
+        if not isinstance(data, dict) or not data.get("prompt") or not data.get("reference_answer"):
+            continue
+        kind = str(data.get("kind", "short_answer"))
+        if kind not in ("multiple_choice", "short_answer", "concept", "method_comparison", "paper_summary"):
+            kind = "short_answer"
+        options = data.get("options", [])
+        if not isinstance(options, list) or kind != "multiple_choice":
+            options = []
+        question = QuizQuestion(id=str(uuid.uuid4()), paper_id=paper_id, kind=kind,
+                                prompt=str(data["prompt"])[:5000], options_json=json.dumps(options[:4], ensure_ascii=False),
+                                reference_answer=str(data["reference_answer"])[:5000])
+        session.add(question)
+        created.append(question)
+    if not created:
+        raise HTTPException(502, "未生成有效测试题，请重试")
+    session.commit()
+    return [quiz_data(q) for q in created]
+
+
+class QuizAnswerIn(BaseModel):
+    answer: str = Field(min_length=1, max_length=10000)
+
+
+@app.post("/api/papers/{paper_id}/quiz/{question_id}/answer")
+async def answer_quiz(paper_id: str, question_id: str, data: QuizAnswerIn, session: Session = Depends(db)):
+    question = session.get(QuizQuestion, question_id)
+    if not question or question.paper_id != paper_id:
+        raise HTTPException(404, "测试题不存在")
+    if question.kind == "multiple_choice":
+        score = 1.0 if data.answer.strip().upper()[:1] == question.reference_answer.strip().upper()[:1] else 0.0
+        feedback = "回答正确。" if score else f"参考答案：{question.reference_answer}"
+    else:
+        prompt = ("根据参考答案评估用户对论文问题的回答。只返回 JSON 对象：score（0 到 1 的数字），feedback（简短中文反馈）。"
+                  "不要因为措辞不同而扣分，也不要编造论文事实。\n"
+                  f"问题：{question.prompt}\n参考答案：{question.reference_answer}\n用户回答：{data.answer}")
+        try:
+            result = json.loads(await generate(prompt, json_mode=True))
+            score = max(0.0, min(1.0, float(result.get("score", 0))))
+            feedback = str(result.get("feedback", "已记录回答。"))[:3000]
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise HTTPException(502, "评估结果格式无效，请重试") from exc
+    attempt = QuizAttempt(id=str(uuid.uuid4()), question_id=question_id, paper_id=paper_id,
+                          answer=data.answer, score=score, feedback=feedback)
+    session.add(attempt)
+    session.commit()
+    return {"id": attempt.id, "score": score, "feedback": feedback}

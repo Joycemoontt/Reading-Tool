@@ -99,6 +99,21 @@ class PaperMindApiTests(unittest.TestCase):
         self.assertEqual(self.client.post(self.base + f"/vocabulary/{item_id}/review", json={"rating": "good"}).status_code, 200)
         self.assertEqual(self.client.get(self.base + "/vocabulary").json()[0]["reviewStatus"], "good")
 
+    def test_quiz_generation_and_attempt_persist(self):
+        async def fake_generate(prompt, json_mode=False):
+            return '[{"kind":"multiple_choice","prompt":"What does the model predict?","options":["A. Future states","B. Prices","C. Weather","D. Nothing"],"reference_answer":"A"},{"kind":"concept","prompt":"Explain latent dynamics.","options":[],"reference_answer":"Predicts future states from compact representations."}]'
+        with patch("app.main.generate", fake_generate):
+            generated = self.client.post(self.base + "/quiz/generate")
+        self.assertEqual(generated.status_code, 200, generated.text)
+        questions = generated.json()
+        self.assertEqual(len(questions), 2)
+        self.assertNotIn("reference_answer", questions[0])
+        answer = self.client.post(self.base + f"/quiz/{questions[0]['id']}/answer", json={"answer": "A"})
+        self.assertEqual(answer.status_code, 200)
+        self.assertEqual(answer.json()["score"], 1.0)
+        saved = self.client.get(self.base + "/quiz").json()
+        self.assertEqual(next(q for q in saved if q["id"] == questions[0]["id"])["attempt"]["answer"], "A")
+
 
 async def translated(items):
     return {item["id"]: "中文翻译：" + item["text"] for item in items}
