@@ -4,10 +4,14 @@ export type Paper = { id: string; title: string; filename: string; folderId: str
 export type Folder = { id: string; name: string };
 export type Paragraph = { id: string; paperId: string; page: number; order: number; sectionId: string; text: string; translation: string | null; speech: Record<string, string>; bbox: number[]; boxes: number[][]; kind: string };
 export type Annotation = { id: string; paragraphId: string | null; page: number; text: string; color: string; kind: string; source: "en" | "zh"; rects: number[][] };
-export type Note = { id: string; paragraphId: string | null; page: number; selectedText: string; content: string };
-export type Interaction = { id: string; question: string; answer: string; paragraphId: string | null; page: number | null; inputMode: "text" | "voice"; createdAt: string };
+export type Evidence = { paragraphId: string; page: number; quote: string };
+export type Note = { id: string; paragraphId: string | null; page: number; selectedText: string; textAnchor: string; rects: number[][]; content: string; createdAt: string; updatedAt: string };
+export type Interaction = { id: string; question: string; answer: string; evidence: Evidence[]; paragraphId: string | null; page: number | null; inputMode: "text" | "voice"; createdAt: string };
 export type Vocabulary = { id: string; word: string; meaning: string; context: string; sourceSentence: string; page: number; reviewStatus: string; nextReviewAt: string };
-export type QuizQuestion = { id: string; kind: string; prompt: string; options: string[]; attempt: null | { answer: string; score: number; feedback: string } };
+export type QuizEvaluation = { status: string; yourAnswer: string; correctAnswer: string; whyCorrect?: string; whyOthers?: { option: string; reason: string }[]; correct?: string; inaccurate?: string; missing?: string; improvement?: string; evidence?: Evidence[]; feedback?: string };
+export type QuizQuestion = { id: string; kind: string; prompt: string; options: { id: string; text: string }[]; status: "ready" | "needs_review" | "problematic"; attempt: null | { answer: string; score: number; feedback: string; evaluation: QuizEvaluation | null; verified: boolean } };
+export type SummaryReview = { id: string; kind: "check" | "polish"; originalContent: string; result: Record<string, unknown>; accepted: boolean; createdAt: string };
+export type PaperSummary = { content: string; status: string; updatedAt: string | null; reviews: SummaryReview[] };
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;

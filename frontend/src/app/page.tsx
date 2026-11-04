@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowUpRight, BookOpen, FileText, Folder as FolderIcon, FolderPlus, Search, Trash2, Upload } from "lucide-react";
 import { Folder, Paper, request } from "@/lib/api";
+import { createUploadQueue } from "@/lib/upload-queue";
 
 type FolderFilter = "all" | "unsorted" | string;
 
@@ -19,7 +20,7 @@ export default function Library() {
   const [folderName, setFolderName] = useState("");
   const [error, setError] = useState("");
   const input = useRef<HTMLInputElement>(null);
-  const dragDepth = useRef(0);
+  const uploadQueue = useRef<ReturnType<typeof createUploadQueue<{ files: File[]; folder: string | null }>> | null>(null);
 
   async function refresh() {
     const [nextPapers, nextFolders] = await Promise.all([request<Paper[]>("/api/papers"), request<Folder[]>("/api/folders")]);
@@ -31,7 +32,7 @@ export default function Library() {
     if (!files.length) return;
     setError("");
     const failures: string[] = [];
-    for (let index = 0; index < files.length; index++) {
+    try { for (let index = 0; index < files.length; index++) {
       const file = files[index];
       if (!file.name.toLowerCase().endsWith(".pdf") || file.size > 30 * 1024 * 1024 || file.size === 0) {
         failures.push(file.name + "：仅支持不超过 30 MB 的 PDF"); continue;
@@ -43,10 +44,18 @@ export default function Library() {
         await request<Paper>("/api/papers" + (folder ? "?folder_id=" + encodeURIComponent(folder) : ""), { method: "POST", body: form });
         await refresh();
       } catch (e) { failures.push(file.name + "：" + (e as Error).message); }
+    }} finally {
+      setUploading("");
+      if (input.current) input.current.value = "";
+      setDragging(false); setFolderDrop(null);
+      if (failures.length) setError(failures.join("；"));
     }
-    setUploading("");
-    if (input.current) input.current.value = "";
-    if (failures.length) setError(failures.join("；"));
+  }
+
+  if (!uploadQueue.current) uploadQueue.current = createUploadQueue(({ files, folder }) => uploadFiles(files, folder));
+  function enqueueFiles(files: File[], folder: string | null) {
+    if (!files.length) return;
+    void uploadQueue.current!.enqueue({ files, folder }).catch(e => setError((e as Error).message));
   }
 
   async function createFolder() {
@@ -86,10 +95,10 @@ export default function Library() {
   const activeName = activeFolder === "all" ? "全部论文" : activeFolder === "unsorted" ? "未分类" : folders.find(f => f.id === activeFolder)?.name || "全部论文";
 
   return <main className={"library-v2 " + (dragging ? "is-dragging" : "")}
-    onDragEnter={e => { if (e.dataTransfer.types.includes("Files")) { dragDepth.current++; setDragging(true); } }}
-    onDragLeave={() => { dragDepth.current--; if (dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); } }}
-    onDragOver={e => e.preventDefault()}
-    onDrop={e => { e.preventDefault(); dragDepth.current = 0; setDragging(false); void uploadFiles(Array.from(e.dataTransfer.files), uploadFolder); setFolderDrop(null); }}>
+    onDragEnter={e => { if (e.dataTransfer.types.includes("Files")) setDragging(true); }}
+    onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) { setDragging(false); setFolderDrop(null); } }}
+    onDragOver={e => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDragging(true); } }}
+    onDrop={e => { e.preventDefault(); setDragging(false); enqueueFiles(Array.from(e.dataTransfer.files), uploadFolder); setFolderDrop(null); }}>
     <header className="library-v2-header"><div className="brand"><div className="brand-mark"><BookOpen size={18}/></div><span>PaperMind</span></div><span className="subtle">论文阅读与学习</span></header>
     <div className="library-v2-layout">
       <nav className="library-nav" aria-label="论文文件夹">
@@ -100,7 +109,7 @@ export default function Library() {
         {folders.map(folder => <div key={folder.id} className={"folder-row " + (folderDrop === folder.id ? "drop-target" : "")}
           onDragOver={e => { e.preventDefault(); setFolderDrop(folder.id); }}
           onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setFolderDrop(null); }}
-          onDrop={e => { e.preventDefault(); e.stopPropagation(); dragDepth.current = 0; setDragging(false); setFolderDrop(null); void uploadFiles(Array.from(e.dataTransfer.files), folder.id); }}>
+          onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragging(false); setFolderDrop(null); enqueueFiles(Array.from(e.dataTransfer.files), folder.id); }}>
           {editingFolder === folder.id ? <div className="folder-editor"><input autoFocus aria-label="重命名文件夹" value={folderName} onChange={e => setFolderName(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void renameFolder(folder); if (e.key === "Escape") setEditingFolder(null); }}/><button onClick={() => void renameFolder(folder)}>保存</button></div> :
             <button className={activeFolder === folder.id ? "active" : ""} onClick={() => setActiveFolder(folder.id)}><FolderIcon size={16}/>{folder.name}<span>{papers.filter(p => p.folderId === folder.id).length}</span></button>}
           <button className="folder-more" title="重命名文件夹" onClick={() => { setEditingFolder(folder.id); setFolderName(folder.name); }}>···</button>
@@ -108,7 +117,7 @@ export default function Library() {
         </div>)}
       </nav>
       <section className="library-v2-main">
-        <div className="library-v2-heading"><div><h1>{activeName}</h1><p>{filtered.length} 篇论文</p></div><button className="primary-button" disabled={!!uploading} onClick={() => input.current?.click()}><Upload size={16}/>上传 PDF</button><input ref={input} type="file" accept="application/pdf,.pdf" multiple hidden onChange={e => void uploadFiles(Array.from(e.target.files || []), uploadFolder)}/></div>
+        <div className="library-v2-heading"><div><h1>{activeName}</h1><p>{filtered.length} 篇论文</p></div><button className="primary-button" onClick={() => input.current?.click()}><Upload size={16}/>上传 PDF</button><input ref={input} type="file" accept="application/pdf,.pdf" multiple hidden onChange={e => { const files = Array.from(e.target.files || []); e.target.value = ""; enqueueFiles(files, uploadFolder); }}/></div>
         <div className="search-box"><Search size={17}/><input placeholder="搜索论文" value={search} onChange={e => setSearch(e.target.value)}/></div>
         {uploading && <div className="upload-status" role="status">{uploading}</div>}
         {error && <div className="error-box" role="alert">{error}</div>}

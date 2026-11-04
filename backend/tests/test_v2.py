@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -84,9 +85,9 @@ class V2ApiTests(unittest.TestCase):
     def test_question_includes_matching_distant_paragraph(self):
         first = self.client.get(self.base + "/paragraphs").json()[0]
         prompts = []
-        async def fake_generate(prompt):
+        async def fake_generate(prompt, json_mode=False):
             prompts.append(prompt)
-            return "解释"
+            return json.dumps({"answer": "解释", "evidence": []})
         with patch("app.main.generate", fake_generate):
             response = self.client.post(self.base + "/ask", json={
                 "question": "latent dynamics 是什么？", "paragraphId": first["id"]})
@@ -102,9 +103,17 @@ class MigrationAndParserTests(unittest.TestCase):
             connection.execute("CREATE TABLE papers (id TEXT PRIMARY KEY, title TEXT)")
             connection.execute("CREATE TABLE annotations (id TEXT PRIMARY KEY, text TEXT)")
             connection.execute("CREATE TABLE paragraphs (id TEXT PRIMARY KEY, text TEXT)")
+            connection.execute("CREATE TABLE notes (id TEXT PRIMARY KEY, content TEXT)")
+            connection.execute("CREATE TABLE interactions (id TEXT PRIMARY KEY, answer TEXT)")
+            connection.execute("CREATE TABLE quiz_questions (id TEXT PRIMARY KEY, prompt TEXT)")
+            connection.execute("CREATE TABLE quiz_attempts (id TEXT PRIMARY KEY, score REAL)")
             connection.execute("INSERT INTO papers VALUES ('existing', 'Keep me')")
             connection.execute("INSERT INTO annotations VALUES ('mark', 'saved text')")
             connection.execute("INSERT INTO paragraphs VALUES ('paragraph', 'original')")
+            connection.execute("INSERT INTO notes VALUES ('note', 'keep note')")
+            connection.execute("INSERT INTO interactions VALUES ('answer', 'keep answer')")
+            connection.execute("INSERT INTO quiz_questions VALUES ('quiz', 'keep question')")
+            connection.execute("INSERT INTO quiz_attempts VALUES ('attempt', 1.0)")
             connection.commit()
             connection.close()
             engine = create_engine("sqlite:///" + str(path))
@@ -117,6 +126,14 @@ class MigrationAndParserTests(unittest.TestCase):
                              ("saved text", "en", None))
             self.assertEqual(connection.execute("SELECT text, line_boxes_json FROM paragraphs").fetchone(),
                              ("original", None))
+            self.assertEqual(connection.execute("SELECT content, text_anchor, rects_json FROM notes").fetchone(),
+                             ("keep note", "", None))
+            self.assertEqual(connection.execute("SELECT answer, evidence_json FROM interactions").fetchone(),
+                             ("keep answer", None))
+            self.assertEqual(connection.execute("SELECT prompt, status FROM quiz_questions").fetchone(),
+                             ("keep question", "needs_review"))
+            self.assertEqual(connection.execute("SELECT score, grading_version FROM quiz_attempts").fetchone(),
+                             (1.0, 1))
             connection.close()
             engine.dispose()
 

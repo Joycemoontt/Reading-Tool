@@ -79,8 +79,11 @@ class Note(Base):
     paragraph_id: Mapped[str | None] = mapped_column(ForeignKey("paragraphs.id", ondelete="SET NULL"), nullable=True)
     page: Mapped[int] = mapped_column(Integer)
     selected_text: Mapped[str] = mapped_column(Text, default="")
+    text_anchor: Mapped[str] = mapped_column(Text, default="")
+    rects_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class Interaction(Base):
@@ -91,6 +94,7 @@ class Interaction(Base):
     page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     question: Mapped[str] = mapped_column(Text)
     answer: Mapped[str] = mapped_column(Text)
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     input_mode: Mapped[str] = mapped_column(String(10), default="text")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -138,6 +142,10 @@ class QuizQuestion(Base):
     prompt: Mapped[str] = mapped_column(Text)
     options_json: Mapped[str] = mapped_column(Text, default="[]")
     reference_answer: Mapped[str] = mapped_column(Text)
+    correct_option_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    explanation_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_paragraph_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="ready")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -149,4 +157,25 @@ class QuizAttempt(Base):
     answer: Mapped[str] = mapped_column(Text)
     score: Mapped[float] = mapped_column(Float)
     feedback: Mapped[str] = mapped_column(Text)
+    evaluation_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    grading_version: Mapped[int] = mapped_column(Integer, default=2)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class PaperSummary(Base):
+    __tablename__ = "paper_summaries"
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True)
+    content: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="draft")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SummaryReview(Base):
+    __tablename__ = "summary_reviews"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    original_content: Mapped[str] = mapped_column(Text)
+    result_json: Mapped[str] = mapped_column(Text)
+    accepted: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

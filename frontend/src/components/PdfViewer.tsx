@@ -8,6 +8,7 @@ import { API, Annotation } from "@/lib/api";
 pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
 export type SelectionGeometry = { text: string; rects: number[][] };
+export type PdfTarget = { id: string; bbox: number[]; boxes: number[][]; rects?: number[][]; text?: string; occurrence?: number; kind?: "search" | "note" | "paragraph" };
 
 function normalizedRects(range: Range, page: HTMLElement): number[][] {
   const bounds = page.getBoundingClientRect();
@@ -27,7 +28,7 @@ function normalizedRects(range: Range, page: HTMLElement): number[][] {
     });
 }
 
-function legacyRects(page: HTMLElement, text: string): number[][] {
+function legacyRects(page: HTMLElement, text: string, preferredY?: number, endY?: number, occurrence?: number): number[][] {
   const layer = page.querySelector(".react-pdf__Page__textContent");
   if (!layer) return [];
   const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
@@ -43,17 +44,32 @@ function legacyRects(page: HTMLElement, text: string): number[][] {
     }
   }
   const needle = text.replace(/\s+/g, " ").trim().toLocaleLowerCase();
-  const start = haystack.toLocaleLowerCase().indexOf(needle);
-  if (start < 0 || !points[start] || !points[start + needle.length - 1]) return [];
-  const range = document.createRange();
-  range.setStart(points[start].node, points[start].offset);
-  range.setEnd(points[start + needle.length - 1].node, points[start + needle.length - 1].offset + 1);
-  return normalizedRects(range, page);
+  if (!needle) return [];
+  let start = -1;
+  let best: number[][] = [];
+  let bestDistance = Infinity;
+  const candidates: number[][][] = [];
+  while ((start = haystack.toLocaleLowerCase().indexOf(needle, start + 1)) >= 0) {
+    if (!points[start] || !points[start + needle.length - 1]) continue;
+    const range = document.createRange();
+    range.setStart(points[start].node, points[start].offset);
+    range.setEnd(points[start + needle.length - 1].node, points[start + needle.length - 1].offset + 1);
+    const rects = normalizedRects(range, page);
+    if (!rects.length) continue;
+    const center = (rects[0][1] + rects[0][3]) / 2;
+    if (preferredY !== undefined && endY !== undefined && center >= preferredY - .02 && center <= endY + .02)
+      candidates.push(rects);
+    const distance = preferredY === undefined ? 0 : Math.abs(center - preferredY);
+    if (distance < bestDistance) { best = rects; bestDistance = distance; }
+    if (preferredY === undefined && occurrence === undefined) break;
+  }
+  if (occurrence !== undefined && candidates[occurrence]) return candidates[occurrence];
+  return best;
 }
 
 function PdfViewer({ paperId, page, width, annotations, target, onSelection, onPageClick }: {
   paperId: string; page: number; width: number; annotations: Annotation[];
-  target: { id: string; bbox: number[]; boxes: number[][] } | null;
+  target: PdfTarget | null;
   onSelection: (value: SelectionGeometry) => void;
   onPageClick: (x: number, y: number) => void;
 }) {
@@ -68,7 +84,10 @@ function PdfViewer({ paperId, page, width, annotations, target, onSelection, onP
     const node = pageNode();
     const scroll = root.current?.closest<HTMLElement>(".pdf-scroll");
     if (!node || !scroll) return;
-    const y = (target.bbox[1] - pageView[1]) / (pageView[3] - pageView[1]);
+    const bboxY = (target.bbox[1] - pageView[1]) / (pageView[3] - pageView[1]);
+    const endY = (target.bbox[3] - pageView[1]) / (pageView[3] - pageView[1]);
+    const exactY = target.text ? legacyRects(node, target.text, bboxY, endY, target.occurrence)[0]?.[1] : undefined;
+    const y = target.rects?.[0]?.[1] ?? exactY ?? bboxY;
     scroll.scrollTo({ top: Math.max(0, node.offsetTop + node.clientHeight * y - scroll.clientHeight * .35), behavior: "smooth" });
   }, [target, pageView, rendered]);
 
@@ -105,12 +124,22 @@ function PdfViewer({ paperId, page, width, annotations, target, onSelection, onP
         return rects.map((rect, index) => <div key={`${a.id}-${index}`} className={`pdf-mark ${a.kind} color-${a.color}`}
           style={{ left: `${rect[0] * 100}%`, top: `${rect[1] * 100}%`, width: `${(rect[2] - rect[0]) * 100}%`, height: `${(rect[3] - rect[1]) * 100}%` }}/>);
       })}
-      {target && target.boxes.map((box, index) => <div key={target.id + "-" + index} className="pdf-target" style={{
-        left: `${(box[0] - pageView[0]) / (pageView[2] - pageView[0]) * 100}%`,
-        top: `${(box[1] - pageView[1]) / (pageView[3] - pageView[1]) * 100}%`,
-        width: `${(box[2] - box[0]) / (pageView[2] - pageView[0]) * 100}%`,
-        height: `${(box[3] - box[1]) / (pageView[3] - pageView[1]) * 100}%`,
-      }}/>)}
+      {target && (() => {
+        const node = pageNode();
+        const preferredY = (target.bbox[1] - pageView[1]) / (pageView[3] - pageView[1]);
+        const endY = (target.bbox[3] - pageView[1]) / (pageView[3] - pageView[1]);
+        const exact = target.rects?.length ? target.rects : node && target.text ? legacyRects(node, target.text, preferredY, endY, target.occurrence) : [];
+        const rects = exact.length ? exact : target.boxes.map(box => [
+          (box[0] - pageView[0]) / (pageView[2] - pageView[0]),
+          (box[1] - pageView[1]) / (pageView[3] - pageView[1]),
+          (box[2] - pageView[0]) / (pageView[2] - pageView[0]),
+          (box[3] - pageView[1]) / (pageView[3] - pageView[1]),
+        ]);
+        return rects.map((rect, index) => <div key={target.id + "-" + index}
+          className={`pdf-target ${target.kind === "search" ? "pdf-search-target" : ""}`}
+          style={{ left: `${rect[0] * 100}%`, top: `${rect[1] * 100}%`,
+            width: `${(rect[2] - rect[0]) * 100}%`, height: `${(rect[3] - rect[1]) * 100}%` }} />);
+      })()}
     </div>}
     {error && <div className="error-box">PDF 加载失败：{error}</div>}
   </div>;

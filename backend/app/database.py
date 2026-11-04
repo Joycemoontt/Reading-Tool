@@ -33,3 +33,17 @@ def migrate_existing_database():
             columns = {row[1] for row in connection.execute(text("PRAGMA table_info(paragraphs)"))}
             if "line_boxes_json" not in columns:
                 connection.execute(text("ALTER TABLE paragraphs ADD COLUMN line_boxes_json TEXT"))
+        additions = {
+            "notes": {"text_anchor": "TEXT NOT NULL DEFAULT ''", "rects_json": "TEXT", "updated_at": "DATETIME"},
+            "interactions": {"evidence_json": "TEXT"},
+            "quiz_questions": {"correct_option_id": "VARCHAR(36)", "explanation_json": "TEXT",
+                               "evidence_paragraph_id": "VARCHAR(80)", "status": "VARCHAR(20) NOT NULL DEFAULT 'needs_review'"},
+            "quiz_attempts": {"evaluation_json": "TEXT", "grading_version": "INTEGER NOT NULL DEFAULT 1"},
+        }
+        for table, fields in additions.items():
+            if table not in tables:
+                continue
+            columns = {row[1] for row in connection.execute(text(f"PRAGMA table_info({table})"))}
+            for column, definition in fields.items():
+                if column not in columns:
+                    connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))

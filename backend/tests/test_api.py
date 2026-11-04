@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -71,9 +72,10 @@ class PaperMindApiTests(unittest.TestCase):
     def test_voice_question_uses_paper_context_and_saves_history(self):
         para = next(p for p in self.client.get(self.base + "/paragraphs").json() if "latent dynamics" in p["text"])
         captured = []
-        async def fake_generate(prompt):
+        async def fake_generate(prompt, json_mode=False):
             captured.append(prompt)
-            return "Latent dynamics predicts transitions in a compact space."
+            return json.dumps({"answer": "Latent dynamics predicts transitions in a compact space.",
+                               "evidence": [{"paragraphId": para["id"], "quote": "latent dynamics model predicts future states"}]})
         with patch("app.main.generate", fake_generate):
             response = self.client.post(self.base + "/ask", json={"question": "latent dynamics 是什么？", "paragraphId": para["id"], "inputMode": "voice"})
         self.assertEqual(response.status_code, 200, response.text)
@@ -101,19 +103,27 @@ class PaperMindApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(self.base + "/vocabulary").json()[0]["reviewStatus"], "good")
 
     def test_quiz_generation_and_attempt_persist(self):
+        para = next(p for p in self.client.get(self.base + "/paragraphs").json() if "latent dynamics" in p["text"])
         async def fake_generate(prompt, json_mode=False):
-            return '[{"kind":"multiple_choice","prompt":"What does the model predict?","options":["A. Future states","B. Prices","C. Weather","D. Nothing"],"reference_answer":"A"},{"kind":"concept","prompt":"Explain latent dynamics.","options":[],"reference_answer":"Predicts future states from compact representations."}]'
+            return json.dumps([{"kind":"multiple_choice","prompt":"What does the model predict?",
+                "options":["Future states","Prices","Weather","Nothing"],"correct_option_text":"Future states",
+                "reference_answer":"Future states","why_correct":"The source says it predicts future states.",
+                "why_others":["","No prices.","No weather.","It predicts something."],
+                "evidence_paragraph_id":para["id"],"evidence_quote":"predicts future states"},
+                {"kind":"concept","prompt":"Explain latent dynamics.","options":[],
+                 "reference_answer":"Predicts future states from compact representations.",
+                 "evidence_paragraph_id":para["id"],"evidence_quote":"predicts future states"}])
         with patch("app.main.generate", fake_generate):
             generated = self.client.post(self.base + "/quiz/generate")
         self.assertEqual(generated.status_code, 200, generated.text)
         questions = generated.json()
         self.assertEqual(len(questions), 2)
         self.assertNotIn("reference_answer", questions[0])
-        answer = self.client.post(self.base + f"/quiz/{questions[0]['id']}/answer", json={"answer": "A"})
+        answer = self.client.post(self.base + f"/quiz/{questions[0]['id']}/answer", json={"answer": questions[0]["options"][0]["id"]})
         self.assertEqual(answer.status_code, 200)
         self.assertEqual(answer.json()["score"], 1.0)
         saved = self.client.get(self.base + "/quiz").json()
-        self.assertEqual(next(q for q in saved if q["id"] == questions[0]["id"])["attempt"]["answer"], "A")
+        self.assertEqual(next(q for q in saved if q["id"] == questions[0]["id"])["attempt"]["answer"], questions[0]["options"][0]["id"])
 
 
 async def translated(items):
