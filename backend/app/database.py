@@ -33,6 +33,10 @@ def migrate_existing_database():
             columns = {row[1] for row in connection.execute(text("PRAGMA table_info(paragraphs)"))}
             if "line_boxes_json" not in columns:
                 connection.execute(text("ALTER TABLE paragraphs ADD COLUMN line_boxes_json TEXT"))
+            if "column_index" not in columns:
+                connection.execute(text("ALTER TABLE paragraphs ADD COLUMN column_index INTEGER"))
+            if "quality_status" not in columns:
+                connection.execute(text("ALTER TABLE paragraphs ADD COLUMN quality_status VARCHAR(20) NOT NULL DEFAULT 'needs_review'"))
         additions = {
             "notes": {"text_anchor": "TEXT NOT NULL DEFAULT ''", "rects_json": "TEXT", "updated_at": "DATETIME"},
             "interactions": {"evidence_json": "TEXT"},

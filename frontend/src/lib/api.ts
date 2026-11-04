@@ -2,7 +2,8 @@ export const API = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 export type Paper = { id: string; title: string; filename: string; folderId: string | null; pages: number; createdAt: string; page: number; mode: "dual" | "paragraph" | "original" };
 export type Folder = { id: string; name: string };
-export type Paragraph = { id: string; paperId: string; page: number; order: number; sectionId: string; text: string; translation: string | null; speech: Record<string, string>; bbox: number[]; boxes: number[][]; kind: string };
+export type Paragraph = { id: string; paperId: string; page: number; order: number; sectionId: string; text: string; translation: string | null; speech: Record<string, string>; bbox: number[]; boxes: number[][]; kind: string; columnIndex: number | null; qualityStatus: string };
+export type DocumentElement = { id: string; paperId: string; page: number; readingOrderIndex: number; kind: "table" | "equation" | "figure"; bbox: number[]; caption: string; rawText: string; content: { paragraphId?: string; columnHeaders?: string[]; rows?: { originalValue: string; bbox: number[] | null; rowspan: number; colspan: number }[][] }; extractionStatus: string };
 export type Annotation = { id: string; paragraphId: string | null; page: number; text: string; color: string; kind: string; source: "en" | "zh"; rects: number[][] };
 export type Evidence = { paragraphId: string; page: number; quote: string };
 export type Note = { id: string; paragraphId: string | null; page: number; selectedText: string; textAnchor: string; rects: number[][]; content: string; createdAt: string; updatedAt: string };

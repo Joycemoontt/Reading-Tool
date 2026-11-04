@@ -41,6 +41,22 @@ class Paragraph(Base):
     y1: Mapped[float] = mapped_column(Float)
     kind: Mapped[str] = mapped_column(String(20), default="body")
     line_boxes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    column_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quality_status: Mapped[str] = mapped_column(String(20), default="needs_review")
+
+
+class DocumentElement(Base):
+    __tablename__ = "document_elements"
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
+    page: Mapped[int] = mapped_column(Integer)
+    reading_order_index: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(20))
+    bbox_json: Mapped[str] = mapped_column(Text)
+    caption: Mapped[str] = mapped_column(Text, default="")
+    raw_text: Mapped[str] = mapped_column(Text, default="")
+    content_json: Mapped[str] = mapped_column(Text, default="{}")
+    extraction_status: Mapped[str] = mapped_column(String(20), default="needs_review")
 
 
 class Translation(Base):

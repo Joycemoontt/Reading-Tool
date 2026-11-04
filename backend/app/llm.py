@@ -11,7 +11,7 @@ _lock = asyncio.Lock()
 _last_call = 0.0
 
 
-async def generate(prompt: str, json_mode: bool = False) -> str:
+async def generate(prompt: str, json_mode: bool = False, image: bytes | None = None) -> str:
     global _last_call
     key = os.getenv("GEMINI_API_KEY")
     model = os.getenv("GEMINI_MODEL")
@@ -27,7 +27,7 @@ async def generate(prompt: str, json_mode: bool = False) -> str:
                 client = genai.Client(api_key=key)
                 return client.models.generate_content(
                     model=model,
-                    contents=prompt,
+                    contents=[prompt, types.Part.from_bytes(data=image, mime_type="image/png")] if image else prompt,
                     config=types.GenerateContentConfig(
                         temperature=0.2,
                         response_mime_type="application/json" if json_mode else "text/plain",

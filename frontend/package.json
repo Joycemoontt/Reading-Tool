@@ -9,12 +9,17 @@
     "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
+    "@types/katex": "^0.16.8",
+    "katex": "^0.19.1",
     "lucide-react": "1.7.0",
     "next": "^16.4.5",
     "pdfjs-dist": "^4.8.69",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "react-pdf": "^9.2.1"
+    "react-markdown": "^10.1.0",
+    "react-pdf": "^9.2.1",
+    "rehype-katex": "^7.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

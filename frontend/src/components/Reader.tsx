@@ -4,11 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { ArrowLeft, BookOpen, ChevronLeft, ChevronRight, Headphones, Highlighter, Languages, MessageCircle, Mic, MoreHorizontal, Pause, Play, Search, Send, Settings2, Square, StickyNote, Trash2, Underline, Volume2, X, ZoomIn, ZoomOut } from "lucide-react";
-import { Annotation, Evidence, Interaction, json, Note, Paper, PaperSummary, Paragraph, request, Vocabulary, QuizQuestion } from "@/lib/api";
+import { API, Annotation, DocumentElement, Evidence, Interaction, json, Note, Paper, PaperSummary, Paragraph, request, Vocabulary, QuizQuestion } from "@/lib/api";
 import { ReadingParagraph, ReadingScope, ReadingSession, ReadingSnapshot, SPEEDS } from "@/lib/audio-core";
 import { attachMediaSession, BrowserSpeechProvider, BrowserVoiceInput, speechRecognitionAvailable } from "@/lib/browser-speech";
 import type { PdfTarget, SelectionGeometry } from "./PdfViewer";
 import FormattedAnswer from "./FormattedAnswer";
+import MathMarkdownRenderer from "./MathMarkdownRenderer";
 import { groupParagraphsByPage, isPageMarker, nearestParagraph, normalizeTerm, searchParagraphs } from "@/lib/reader-utils";
 
 const PdfViewer = dynamic(() => import("./PdfViewer"), { ssr: false });
@@ -34,6 +35,9 @@ function translatedText(paragraph: Paragraph, annotations: Annotation[]) {
 export default function Reader({ paperId }: { paperId: string }) {
   const [paper, setPaper] = useState<Paper | null>(null);
   const [paragraphs, setParagraphs] = useState<Paragraph[]>([]);
+  const [elements, setElements] = useState<DocumentElement[]>([]);
+  const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
+  const [reparsing, setReparsing] = useState(false);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [history, setHistory] = useState<Interaction[]>([]);
@@ -105,20 +109,29 @@ export default function Reader({ paperId }: { paperId: string }) {
   }), [paperId, provider]);
 
   const refresh = useCallback(async () => {
-    const [p, ps, as, ns, hs, vs, qs, sm] = await Promise.all([
+    const [p, ps, es, as, ns, hs, vs, qs, sm] = await Promise.all([
       request<Paper>(`/api/papers/${paperId}`), request<Paragraph[]>(`/api/papers/${paperId}/paragraphs`),
+      request<DocumentElement[]>(`/api/papers/${paperId}/elements`),
       request<Annotation[]>(`/api/papers/${paperId}/annotations`), request<Note[]>(`/api/papers/${paperId}/notes`),
       request<Interaction[]>(`/api/papers/${paperId}/history`),
       request<Vocabulary[]>(`/api/papers/${paperId}/vocabulary`),
       request<QuizQuestion[]>(`/api/papers/${paperId}/quiz`),
       request<PaperSummary>(`/api/papers/${paperId}/summary`),
     ]);
-    setPaper(p); setParagraphs(ps); setAnnotations(as); setNotes(ns); setHistory(hs); setVocabulary(vs); setQuiz(qs);
+    setPaper(p); setParagraphs(ps); setElements(es); setAnnotations(as); setNotes(ns); setHistory(hs); setVocabulary(vs); setQuiz(qs);
     setSummary(sm); setSummaryDraft(sm.content); summarySaved.current = sm.content;
     setPage(p.page); setMode(p.mode);
   }, [paperId]);
 
   useEffect(() => { void refresh().catch(e => setError(e.message)); }, [refresh]);
+  useEffect(() => {
+    const container = translationContainer.current;
+    if (!container) return;
+    const match = selectedParagraphId && paragraphs.find(p => p.id === selectedParagraphId && p.page === page);
+    const node = match && container.querySelector(`[data-para="${CSS.escape(match.id)}"]`);
+    if (node) node.scrollIntoView({ block: "center", behavior: "smooth" });
+    else container.scrollTo({ top: 0 });
+  }, [page, mode, selectedParagraphId, paragraphs]);
   useEffect(() => {
     if (!summary || summaryDraft === summarySaved.current) return;
     const timeout = window.setTimeout(() => { void saveSummaryNow(summaryLatest.current).catch(e => setError((e as Error).message)); }, 700);
@@ -178,7 +191,7 @@ export default function Reader({ paperId }: { paperId: string }) {
   }
   function changePage(next: number) {
     if (!paper) return;
-    const safe = Math.max(1, Math.min(paper.pages, next)); setPage(safe); setSelectedParagraphId(null); persistProgress(safe, mode);
+    const safe = Math.max(1, Math.min(paper.pages, next)); setPage(safe); setSelectedParagraphId(null); setSelectedElementId(null); persistProgress(safe, mode);
   }
   function changeMode(next: Paper["mode"]) { setMode(next); persistProgress(page, next); }
 
@@ -195,11 +208,15 @@ export default function Reader({ paperId }: { paperId: string }) {
 
   const onPdfClick = useCallback((x: number, y: number) => {
     const { page, paragraphs } = selectionContext.current;
+    const element = elements.filter(item => item.page === page && x >= item.bbox[0] && x <= item.bbox[2]
+      && y >= item.bbox[1] && y <= item.bbox[3]).sort((a, b) =>
+      (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]) - (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]))[0];
+    setSelectedElementId(element?.id || null);
     const nearest = nearestParagraph(paragraphs, page, x, y);
     if (!nearest) return;
     setSelectedParagraphId(nearest.id);
     translationContainer.current?.querySelector(`[data-para="${CSS.escape(nearest.id)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, []);
+  }, [elements]);
 
   function onTranslationSelection(event: React.MouseEvent<HTMLDivElement>) {
     const selection = window.getSelection();
@@ -220,6 +237,31 @@ export default function Reader({ paperId }: { paperId: string }) {
     setSelectedParagraphId(paragraph.id);
     setTargetParagraph({ id: `${paragraph.id}-${Date.now()}`, bbox: paragraph.bbox, kind: "paragraph",
       boxes: paragraph.boxes?.length ? paragraph.boxes : [paragraph.bbox] });
+  }
+
+  function locateElement(element: DocumentElement) {
+    changePage(element.page);
+    setTargetParagraph({ id: `${element.id}-${Date.now()}`, bbox: element.bbox,
+      boxes: [element.bbox], kind: "paragraph" });
+  }
+
+  async function reparsePaper() {
+    setReparsing(true); setError("");
+    try {
+      await request(`/api/papers/${paperId}/reparse`, { method: "POST" });
+      await refresh();
+    } catch (e) { setError((e as Error).message); }
+    finally { setReparsing(false); }
+  }
+
+  async function explainElement(element: DocumentElement) {
+    setBusy(true); setError(""); setSidebar(true); setTab("ai"); session.pause();
+    try {
+      const result = await request<{ answer: string }>(`/api/papers/${paperId}/elements/${encodeURIComponent(element.id)}/explain`, { method: "POST" });
+      setAnswer(result.answer);
+      setHistory(await request(`/api/papers/${paperId}/history`));
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
   }
 
   function locateEvidence(evidence: { paragraphId?: string | null; page: number; quote?: string; rects?: number[][]; occurrence?: number }, kind: "note" | "search" | "paragraph" = "paragraph") {
@@ -276,13 +318,13 @@ export default function Reader({ paperId }: { paperId: string }) {
   async function translate() {
     setTranslating(true); setError("");
     try {
-      let remaining = paragraphs.length - paragraphs.filter(p => p.translation).length;
+      let remaining = paragraphs.filter(p => p.kind !== "table" && !p.translation).length;
       while (remaining > 0) {
         const result = await request<{ translated: number; remaining: number }>(`/api/papers/${paperId}/translate?limit=8`, { method: "POST" });
         remaining = result.remaining;
         const updated = await request<Paragraph[]>(`/api/papers/${paperId}/paragraphs`);
         setParagraphs(updated);
-        setTranslationProgress(updated.length - remaining);
+        setTranslationProgress(updated.filter(p => p.kind !== "table").length - remaining);
       }
     }
     catch (e) { setError((e as Error).message); }
@@ -448,10 +490,43 @@ export default function Reader({ paperId }: { paperId: string }) {
   }
 
   const current = paragraphs.find(p => p.id === snapshot.paragraphId);
-  const visibleParagraphs = useMemo(() => paragraphs.filter(p => !isPageMarker(p.text)), [paragraphs]);
+  const visibleParagraphs = useMemo(() => paragraphs.filter(p => p.kind !== "table" && !isPageMarker(p.text)), [paragraphs]);
   const pageGroups = useMemo(() => groupParagraphsByPage(visibleParagraphs), [visibleParagraphs]);
+  const currentPageGroup = pageGroups.filter(([number]) => number === page);
   const translatedCount = visibleParagraphs.filter(p => p.translation).length;
   const selectedVoiceOptions = voices.filter(v => v.lang.toLowerCase().startsWith(snapshot.language));
+  const selectedElement = elements.find(item => item.id === selectedElementId);
+
+  function pageContent(pageNumber: number, group: Paragraph[]) {
+    const pageElements = elements.filter(element => element.page === pageNumber);
+    const withinTable = (paragraph: Paragraph) => pageElements.some(element => element.kind === "table" &&
+      (paragraph.bbox[0] + paragraph.bbox[2]) / 2 >= element.bbox[0] &&
+      (paragraph.bbox[0] + paragraph.bbox[2]) / 2 <= element.bbox[2] &&
+      (paragraph.bbox[1] + paragraph.bbox[3]) / 2 >= element.bbox[1] &&
+      (paragraph.bbox[1] + paragraph.bbox[3]) / 2 <= element.bbox[3]);
+    const items: { order: number; paragraph?: Paragraph; element?: DocumentElement }[] = [
+      ...group.filter(p => !withinTable(p)).map(paragraph => ({ order: paragraph.order, paragraph })),
+      ...pageElements.map(element => ({ order: element.readingOrderIndex + .5, element })),
+    ];
+    return items.sort((a, b) => a.order - b.order).map(item => {
+      const element = item.element;
+      if (element) return <div className="science-element" key={element.id}>
+        <div className="science-element-head"><strong>{element.kind === "table" ? "表格" : element.kind === "equation" ? "公式" : "图片"}</strong><span>第 {element.page} 页 · 需与原 PDF 核对</span></div>
+        {element.caption && <p className="science-caption">{element.caption}</p>}
+        {element.kind === "table" && <div className="science-table-scroll"><table><thead><tr>{element.content.columnHeaders?.map((cell, index) => <th key={index}>{cell}</th>)}</tr></thead><tbody>{element.content.rows?.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, index) => <td key={index}>{cell.originalValue}</td>)}</tr>)}</tbody></table></div>}
+        <button className="science-image-button" onClick={() => locateElement(element)} title="定位原 PDF 区域"><img src={`${API}/api/papers/${paperId}/elements/${encodeURIComponent(element.id)}/image`} alt={`${element.kind} 原 PDF 裁剪图`}/></button>
+        <div className="science-actions"><button onClick={() => locateElement(element)}>定位原文</button><button disabled={busy} onClick={() => void explainElement(element)}>解释{element.kind === "table" ? "表格" : element.kind === "equation" ? "公式" : "图片"}</button></div>
+      </div>;
+      const p = item.paragraph!;
+      return <div key={p.id} data-para={p.id} className={`translation-paragraph ${p.id === snapshot.paragraphId && snapshot.status === "playing" ? "speaking" : ""} ${p.kind === "heading" ? "is-heading" : ""}`} onClick={() => locateParagraph(p)}>
+        <div className="para-actions">{/[=∑∫∂Σ]|\b(?:Eq\.|equation)\b/i.test(p.text) && <button title="生成并缓存公式口语说明" onClick={e => { e.stopPropagation(); void prepareSpeech(p); }}>∑</button>}<button title="从此段朗读" onClick={e => { e.stopPropagation(); void startAudio("full", p.id); }}><Play size={13}/></button></div>
+        {mode === "paragraph" && <p className="original-text">{p.text}</p>}
+        {p.translation ? annotations.some(a => a.source === "zh" && a.paragraphId === p.id)
+          ? <p>{translatedText(p, annotations)}</p> : <MathMarkdownRenderer text={p.translation} className="translated-math"/>
+          : <p><span className="untranslated">尚未翻译 · 点击顶部“全文翻译”</span></p>}
+      </div>;
+    });
+  }
 
   if (!paper) return <div className="loading-screen"><div className="brand"><div className="brand-mark"><BookOpen size={19}/></div>PaperMind</div><p>{error || "正在打开论文…"}</p></div>;
   return <div className="reader-shell">
@@ -465,7 +540,8 @@ export default function Reader({ paperId }: { paperId: string }) {
 
     {error && <div className="reader-error"><span>{error}</span><button onClick={() => setError("")}><X size={15}/></button></div>}
     <div className="reader-main">
-      <div className="reading-area"><div className="reading-toolbar"><div className="page-controls"><button onClick={() => changePage(page - 1)} disabled={page <= 1}><ChevronLeft size={18}/></button><span>第 <strong>{page}</strong> / {paper.pages} 页</span><button onClick={() => changePage(page + 1)} disabled={page >= paper.pages}><ChevronRight size={18}/></button></div><div className="reading-tools"><button title="缩小" onClick={() => setZoom(v => Math.max(.6, +(v - .1).toFixed(1)))}><ZoomOut size={17}/></button><span>{Math.round(zoom * 100)}%</span><button title="放大" onClick={() => setZoom(v => Math.min(1.6, +(v + .1).toFixed(1)))}><ZoomIn size={17}/></button><button title="查找论文文字" onClick={() => setSearchOpen(value => !value)}><Search size={17}/></button>{searchOpen && <input className="reader-search" autoFocus value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setSearchIndex(0); if (!e.target.value.trim()) setTargetParagraph(null); }} onKeyDown={e => { if (e.key === "Enter") findText(); if (e.key === "Escape") setSearchOpen(false); }} placeholder="搜索原文或译文"/>}</div></div>
+      <div className="reading-area"><div className="reading-toolbar"><div className="page-controls"><button onClick={() => changePage(page - 1)} disabled={page <= 1}><ChevronLeft size={18}/></button><span>第 <strong>{page}</strong> / {paper.pages} 页</span><button onClick={() => changePage(page + 1)} disabled={page >= paper.pages}><ChevronRight size={18}/></button></div><div className="reading-tools"><button title="缩小" onClick={() => setZoom(v => Math.max(.6, +(v - .1).toFixed(1)))}><ZoomOut size={17}/></button><span>{Math.round(zoom * 100)}%</span><button title="放大" onClick={() => setZoom(v => Math.min(1.6, +(v + .1).toFixed(1)))}><ZoomIn size={17}/></button><button title="查找论文文字" onClick={() => setSearchOpen(value => !value)}><Search size={17}/></button><button title="安全重新解析：保留段落 ID、译文和笔记" disabled={reparsing} onClick={() => void reparsePaper()}>{reparsing ? "解析中…" : "重新解析"}</button>{searchOpen && <input className="reader-search" autoFocus value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setSearchIndex(0); if (!e.target.value.trim()) setTargetParagraph(null); }} onKeyDown={e => { if (e.key === "Enter") findText(); if (e.key === "Escape") setSearchOpen(false); }} placeholder="搜索原文或译文"/>}</div></div>
+        {selectedElement && <div className="pdf-object-toolbar"><span>第 {selectedElement.page} 页 · {selectedElement.kind === "equation" ? "公式" : selectedElement.kind === "table" ? "表格" : "图片"} · 需核对原图</span><button disabled={busy} onClick={() => void explainElement(selectedElement)}>解释{selectedElement.kind === "equation" ? "公式" : selectedElement.kind === "table" ? "表格" : "图片"}</button><button aria-label="关闭对象工具栏" onClick={() => setSelectedElementId(null)}><X size={13}/></button></div>}
         {searchOpen && searchQuery.trim() && <div className="search-results" role="region" aria-label="论文全文搜索结果">
           <div className="search-results-head"><strong>{searchHits.length} 处匹配</strong><span>英文全文 · 已有中文译文</span><button title="上一个结果" disabled={!searchHits.length} onClick={() => goToSearch(searchIndex - 1)}><ChevronLeft size={15}/></button><button title="下一个结果" disabled={!searchHits.length} onClick={() => goToSearch(searchIndex + 1)}><ChevronRight size={15}/></button><button title="清除搜索" onClick={() => { setSearchQuery(""); setTargetParagraph(null); }}><X size={15}/></button></div>
           {searchHits.length ? <div className="search-results-list">{searchHits.map((hit, index) => <button key={hit.key} className={index === searchIndex ? "active" : ""} onClick={() => goToSearch(index)}><span>第 {hit.page} 页 · {hit.source === "en" ? "原文" : "中文"}</span><small>{hit.snippet}</small></button>)}</div> : <p>没有找到结果。未翻译段落无法进行中文搜索。</p>}
@@ -474,13 +550,9 @@ export default function Reader({ paperId }: { paperId: string }) {
           {mode !== "original" && <div className="column-divider" role="separator" aria-label="调整 PDF 与译文宽度" onPointerDown={beginResize}/>}
           {mode !== "original" && <div className="translation-scroll" ref={translationContainer} onMouseUp={onTranslationSelection}><div className="translation-heading"><div><h3>{mode === "dual" ? "中文对照" : "段落对照"}</h3></div><span>{translatedCount}/{visibleParagraphs.length}</span></div>
             {paragraphs.length === 0 && <div className="translation-empty">没有提取到可阅读文本。这份 PDF 可能是扫描件；原版 PDF 仍可阅读。</div>}
-            {pageGroups.map(([pageNumber, group]) => <section className="translation-page" key={pageNumber}>
+            {currentPageGroup.map(([pageNumber, group]) => <section className="translation-page" key={pageNumber}>
               <h4>第 {pageNumber} 页</h4>
-              {group.map(p => <div key={p.id} data-para={p.id} className={`translation-paragraph ${p.id === snapshot.paragraphId && snapshot.status === "playing" ? "speaking" : ""} ${p.kind === "heading" ? "is-heading" : ""}`} onClick={() => locateParagraph(p)}>
-                <div className="para-actions">{/[=∑∫∂Σ]|\b(?:Eq\.|equation)\b/i.test(p.text) && <button title="生成并缓存公式口语说明" onClick={e => { e.stopPropagation(); void prepareSpeech(p); }}>∑</button>}<button title="从此段朗读" onClick={e => { e.stopPropagation(); void startAudio("full", p.id); }}><Play size={13}/></button></div>
-                {mode === "paragraph" && <p className="original-text">{p.text}</p>}
-                <p>{p.translation ? translatedText(p, annotations) : <span className="untranslated">尚未翻译 · 点击顶部“全文翻译”</span>}</p>
-              </div>)}
+              {pageContent(pageNumber, group)}
             </section>)}
           </div>}
         </div>
