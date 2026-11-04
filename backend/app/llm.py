@@ -11,10 +11,17 @@ _lock = asyncio.Lock()
 _last_call = 0.0
 
 
-async def generate(prompt: str, json_mode: bool = False, image: bytes | None = None) -> str:
+def model_for_task(task: str) -> str | None:
+    names = {"brief": "GEMINI_MODEL_BRIEF", "deep": "GEMINI_MODEL_REASONING",
+             "ask": "GEMINI_MODEL_REASONING", "vision": "GEMINI_MODEL_VISION"}
+    return os.getenv(names.get(task, "")) or os.getenv("GEMINI_MODEL")
+
+
+async def generate(prompt: str, json_mode: bool = False, image: bytes | None = None,
+                   model_override: str | None = None) -> str:
     global _last_call
     key = os.getenv("GEMINI_API_KEY")
-    model = os.getenv("GEMINI_MODEL")
+    model = model_override or os.getenv("GEMINI_MODEL")
     if not key or not model:
         raise HTTPException(503, "请先在后端环境变量中配置 GEMINI_API_KEY 和 GEMINI_MODEL")
     async with _lock:

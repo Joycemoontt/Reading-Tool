@@ -39,7 +39,7 @@ def migrate_existing_database():
                 connection.execute(text("ALTER TABLE paragraphs ADD COLUMN quality_status VARCHAR(20) NOT NULL DEFAULT 'needs_review'"))
         additions = {
             "notes": {"text_anchor": "TEXT NOT NULL DEFAULT ''", "rects_json": "TEXT", "updated_at": "DATETIME"},
-            "interactions": {"evidence_json": "TEXT"},
+            "interactions": {"evidence_json": "TEXT", "source_anchor_json": "TEXT"},
             "quiz_questions": {"correct_option_id": "VARCHAR(36)", "explanation_json": "TEXT",
                                "evidence_paragraph_id": "VARCHAR(80)", "status": "VARCHAR(20) NOT NULL DEFAULT 'needs_review'"},
             "quiz_attempts": {"evaluation_json": "TEXT", "grading_version": "INTEGER NOT NULL DEFAULT 1"},

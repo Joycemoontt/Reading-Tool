@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { ArrowLeft, BookOpen, ChevronLeft, ChevronRight, Headphones, Highlighter, Languages, MessageCircle, Mic, MoreHorizontal, Pause, Play, Search, Send, Settings2, Square, StickyNote, Trash2, Underline, Volume2, X, ZoomIn, ZoomOut } from "lucide-react";
-import { API, Annotation, DocumentElement, Evidence, Interaction, json, Note, Paper, PaperSummary, Paragraph, request, Vocabulary, QuizQuestion } from "@/lib/api";
+import { API, Annotation, DocumentElement, Evidence, Interaction, json, Note, Paper, PaperSummary, Paragraph, request, SelectionReference, SourceAnchor, Vocabulary, QuizQuestion } from "@/lib/api";
 import { ReadingParagraph, ReadingScope, ReadingSession, ReadingSnapshot, SPEEDS } from "@/lib/audio-core";
 import { attachMediaSession, BrowserSpeechProvider, BrowserVoiceInput, speechRecognitionAvailable } from "@/lib/browser-speech";
 import type { PdfTarget, SelectionGeometry } from "./PdfViewer";
@@ -56,6 +56,11 @@ export default function Reader({ paperId }: { paperId: string }) {
   const [autoFollow, setAutoFollow] = useState(true);
   const [simplifyCitations, setSimplifyCitations] = useState(true);
   const [selected, setSelected] = useState("");
+  const [activeReference, setActiveReference] = useState<SelectionReference | null>(null);
+  const [formulaFocus, setFormulaFocus] = useState<{ elementId: string; mode: "brief" | "deep" } | null>(null);
+  const [formulaReplies, setFormulaReplies] = useState<Record<string, string>>({});
+  const [formulaBusy, setFormulaBusy] = useState(false);
+  const [previewElementId, setPreviewElementId] = useState<string | null>(null);
   const [selectionSource, setSelectionSource] = useState<"en" | "zh">("en");
   const [selectionRects, setSelectionRects] = useState<number[][]>([]);
   const [selectionPage, setSelectionPage] = useState(1);
@@ -81,7 +86,7 @@ export default function Reader({ paperId }: { paperId: string }) {
   const [translationProgress, setTranslationProgress] = useState(0);
   const [error, setError] = useState("");
   const [answer, setAnswer] = useState("");
-  const [failedAsk, setFailedAsk] = useState<{ question: string; task: "ask" | "translate" | "explain" } | null>(null);
+  const [failedAsk, setFailedAsk] = useState<{ question: string; task: "ask" | "translate" | "explain"; reference: SelectionReference | null } | null>(null);
   const [voices, setVoices] = useState<{ id: string; name: string; lang: string }[]>([]);
   const [voiceId, setVoiceId] = useState("");
   const [snapshot, setSnapshot] = useState<ReadingSnapshot>({ status: "idle", paragraphId: null, index: 0, total: 0, charIndex: 0, language: "en", speed: 1, error: null });
@@ -96,6 +101,11 @@ export default function Reader({ paperId }: { paperId: string }) {
   const summaryLatest = useRef("");
   summaryLatest.current = summaryDraft;
   const chatBody = useRef<HTMLDivElement>(null);
+  const questionInput = useRef<HTMLTextAreaElement>(null);
+  const askAbort = useRef<AbortController | null>(null);
+  const askRequestId = useRef(0);
+  const formulaAbort = useRef<AbortController | null>(null);
+  const formulaRequestId = useRef(0);
   const recognition = useRef<BrowserVoiceInput | null>(null);
   const provider = useMemo(() => new BrowserSpeechProvider(), []);
   const session = useMemo(() => new ReadingSession(paperId, provider, {
@@ -151,7 +161,7 @@ export default function Reader({ paperId }: { paperId: string }) {
     const unsubscribeVoices = provider.onVoicesChanged(() => setVoices(provider.voices()));
     const detachMedia = attachMediaSession({ play: () => session.play(), pause: () => session.pause(),
       previous: () => session.previous(), next: () => session.next(), stop: () => session.stop() });
-    return () => { recognition.current?.dispose(); session.stop(); detachMedia(); unsubscribeVoices(); };
+    return () => { recognition.current?.dispose(); askAbort.current?.abort(); formulaAbort.current?.abort(); session.stop(); detachMedia(); unsubscribeVoices(); };
   }, [provider, session]);
 
   useEffect(() => {
@@ -203,7 +213,8 @@ export default function Reader({ paperId }: { paperId: string }) {
     setSelectionPage(page);
     const normalized = value.text.replace(/\s+/g, " ").slice(0, 60).toLowerCase();
     const match = paragraphs.find(p => p.page === page && p.text.toLowerCase().includes(normalized));
-    setSelectedParagraphId(match?.id || paragraphs.find(p => p.page === page)?.id || null);
+    const nearest = value.pdfPoint && nearestParagraph(paragraphs, page, value.pdfPoint[0], value.pdfPoint[1]);
+    setSelectedParagraphId(match?.id || nearest?.id || null);
   }, []);
 
   const onPdfClick = useCallback((x: number, y: number) => {
@@ -245,6 +256,43 @@ export default function Reader({ paperId }: { paperId: string }) {
       boxes: [element.bbox], kind: "paragraph" });
   }
 
+  function selectionReference(): SelectionReference | null {
+    if (!selected.trim()) return null;
+    return { paragraphId: selectedParagraphId, elementId: null, page: selectionPage,
+      sourceLanguage: selectionSource, selectedText: selected.trim(),
+      rects: selectionSource === "en" ? selectionRects : [] };
+  }
+
+  function confirmSelectionForAsk() {
+    const reference = selectionReference();
+    if (!reference) { setError("无法定位当前选区，请重新选中文字"); return; }
+    askAbort.current?.abort(); askRequestId.current++; setBusy(false);
+    formulaAbort.current?.abort();
+    setActiveReference(reference); setFormulaFocus(null); setSelected("");
+    window.getSelection()?.removeAllRanges();
+    setSidebar(true); setTab("ai"); setError("");
+    requestAnimationFrame(() => questionInput.current?.focus());
+  }
+
+  function locateReference(reference: SourceAnchor) {
+    if (reference.elementId) {
+      const element = elements.find(item => item.id === reference.elementId);
+      if (element) { locateElement(element); return; }
+    }
+    const paragraph = paragraphs.find(item => item.id === reference.paragraphId);
+    if (paragraph) {
+      changePage(paragraph.page);
+      setSelectedParagraphId(paragraph.id);
+      setTargetParagraph({ id: `${paragraph.id}-${Date.now()}`, bbox: paragraph.bbox,
+        boxes: paragraph.boxes?.length ? paragraph.boxes : [paragraph.bbox],
+        rects: reference.alignment === "exact" && reference.sourceLanguage === "en" ? reference.rects : undefined,
+        kind: "paragraph" });
+    } else if (reference.page) {
+      changePage(reference.page);
+      setError("已回到原页；旧引用缺少可核对的精确锚点。");
+    }
+  }
+
   async function reparsePaper() {
     setReparsing(true); setError("");
     try {
@@ -257,11 +305,45 @@ export default function Reader({ paperId }: { paperId: string }) {
   async function explainElement(element: DocumentElement) {
     setBusy(true); setError(""); setSidebar(true); setTab("ai"); session.pause();
     try {
-      const result = await request<{ answer: string }>(`/api/papers/${paperId}/elements/${encodeURIComponent(element.id)}/explain`, { method: "POST" });
+      const result = await request<{ answer: string; reference: SourceAnchor }>(`/api/papers/${paperId}/elements/${encodeURIComponent(element.id)}/explain?mode=deep`, { method: "POST" });
+      setActiveReference({ paragraphId: result.reference.paragraphId, elementId: element.id, page: element.page,
+        sourceLanguage: "en", selectedText: "", rects: [] });
+      setFormulaFocus(null);
       setAnswer(result.answer);
       setHistory(await request(`/api/papers/${paperId}/history`));
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
+  }
+
+  async function openFormula(element: DocumentElement, mode: "brief" | "deep" = "brief") {
+    formulaAbort.current?.abort();
+    const requestId = ++formulaRequestId.current;
+    setFormulaFocus({ elementId: element.id, mode }); setSidebar(true); setTab("ai");
+    setActiveReference({ paragraphId: element.content.paragraphId || null, elementId: element.id,
+      page: element.page, sourceLanguage: "en", selectedText: "", rects: [] });
+    setSelected(""); setError(""); session.pause();
+    const key = `${element.id}:${mode}`;
+    if (formulaReplies[key]) { setFormulaBusy(false); return; }
+    const controller = new AbortController();
+    formulaAbort.current = controller;
+    setFormulaBusy(true);
+    try {
+      const result = await request<{ answer: string }>(`/api/papers/${paperId}/elements/${encodeURIComponent(element.id)}/explain?mode=${mode}`,
+        { method: "POST", signal: controller.signal });
+      if (formulaRequestId.current !== requestId || controller.signal.aborted) return;
+      setFormulaReplies(previous => ({ ...previous, [key]: result.answer }));
+      if (mode === "deep") setHistory(await request(`/api/papers/${paperId}/history`));
+    } catch (e) {
+      if (!controller.signal.aborted && formulaRequestId.current === requestId) setError((e as Error).message);
+    } finally {
+      if (formulaRequestId.current === requestId) setFormulaBusy(false);
+    }
+  }
+
+  function cancelFormula() {
+    formulaRequestId.current++;
+    formulaAbort.current?.abort();
+    setFormulaBusy(false);
   }
 
   function locateEvidence(evidence: { paragraphId?: string | null; page: number; quote?: string; rects?: number[][]; occurrence?: number }, kind: "note" | "search" | "paragraph" = "paragraph") {
@@ -471,16 +553,39 @@ export default function Reader({ paperId }: { paperId: string }) {
     if (started) setRecording(true);
   }
 
-  async function ask(override?: string, task: "ask" | "translate" | "explain" = "ask") {
+  function cancelAsk() {
+    askRequestId.current++;
+    askAbort.current?.abort();
+    setBusy(false);
+  }
+
+  async function ask(override?: string, task: "ask" | "translate" | "explain" = "ask",
+                     referenceOverride?: SelectionReference | null) {
     if (!(override || question).trim() || busy) return;
-    const contextId = (selected ? selectedParagraphId : null) || snapshot.paragraphId || selectedParagraphId || null;
+    const reference = referenceOverride !== undefined ? referenceOverride : selected ? selectionReference() : activeReference;
+    const contextId = reference ? reference.paragraphId : snapshot.paragraphId || selectedParagraphId || null;
     const asked = (override || question).trim();
+    askAbort.current?.abort();
+    const controller = new AbortController();
+    const requestId = ++askRequestId.current;
+    askAbort.current = controller;
     setBusy(true); setError(""); setAnswer(""); setFailedAsk(null); session.pause();
+    if (reference) setActiveReference(reference);
+    setSelected(""); window.getSelection()?.removeAllRanges();
     try {
-      const response = await request<{ answer: string }>(`/api/papers/${paperId}/ask`, json({ question: asked, paragraphId: contextId, selectedText: selected, inputMode, task }));
-      setAnswer(response.answer); setHistory(await request(`/api/papers/${paperId}/history`)); setQuestion(""); setSelected(""); setInputMode("text");
-    } catch (e) { setFailedAsk({ question: asked, task }); setError(e instanceof DOMException && e.name === "TimeoutError" ? "请求超时，请重试；问题仍保留在输入框中。" : (e as Error).message); }
-    finally { setBusy(false); }
+      const response = await request<{ answer: string }>(`/api/papers/${paperId}/ask`, { ...json({ question: asked,
+        paragraphId: contextId, selectedText: reference?.selectedText || "", reference, inputMode, task }), signal: controller.signal });
+      if (controller.signal.aborted || askRequestId.current !== requestId) return;
+      setAnswer(response.answer);
+      try { setHistory(await request(`/api/papers/${paperId}/history`)); }
+      catch { setError("回答已保存，但历史暂时未刷新；重新打开论文即可查看。"); }
+      if (askRequestId.current === requestId) { setQuestion(""); setInputMode("text"); }
+    } catch (e) {
+      if (!controller.signal.aborted && askRequestId.current === requestId) {
+        setFailedAsk({ question: asked, task, reference });
+        setError((e as Error).message);
+      }
+    } finally { if (askRequestId.current === requestId) setBusy(false); }
   }
 
   function speakAnswer(text: string) {
@@ -496,6 +601,8 @@ export default function Reader({ paperId }: { paperId: string }) {
   const translatedCount = visibleParagraphs.filter(p => p.translation).length;
   const selectedVoiceOptions = voices.filter(v => v.lang.toLowerCase().startsWith(snapshot.language));
   const selectedElement = elements.find(item => item.id === selectedElementId);
+  const focusedFormula = elements.find(item => item.id === formulaFocus?.elementId);
+  const previewElement = elements.find(item => item.id === previewElementId);
 
   function pageContent(pageNumber: number, group: Paragraph[]) {
     const pageElements = elements.filter(element => element.page === pageNumber);
@@ -514,8 +621,8 @@ export default function Reader({ paperId }: { paperId: string }) {
         <div className="science-element-head"><strong>{element.kind === "table" ? "表格" : element.kind === "equation" ? "公式" : "图片"}</strong><span>第 {element.page} 页 · 需与原 PDF 核对</span></div>
         {element.caption && <p className="science-caption">{element.caption}</p>}
         {element.kind === "table" && <div className="science-table-scroll"><table><thead><tr>{element.content.columnHeaders?.map((cell, index) => <th key={index}>{cell}</th>)}</tr></thead><tbody>{element.content.rows?.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, index) => <td key={index}>{cell.originalValue}</td>)}</tr>)}</tbody></table></div>}
-        <button className="science-image-button" onClick={() => locateElement(element)} title="定位原 PDF 区域"><img src={`${API}/api/papers/${paperId}/elements/${encodeURIComponent(element.id)}/image`} alt={`${element.kind} 原 PDF 裁剪图`}/></button>
-        <div className="science-actions"><button onClick={() => locateElement(element)}>定位原文</button><button disabled={busy} onClick={() => void explainElement(element)}>解释{element.kind === "table" ? "表格" : element.kind === "equation" ? "公式" : "图片"}</button></div>
+        <button className="science-image-button" onClick={() => setPreviewElementId(element.id)} title="放大原 PDF 区域"><img src={`${API}/api/papers/${paperId}/elements/${encodeURIComponent(element.id)}/image`} alt={`${element.kind} 原 PDF 裁剪图`}/></button>
+        <div className="science-actions"><button onClick={() => locateElement(element)}>定位原文</button>{element.kind === "equation" ? <><button onClick={() => void openFormula(element, "brief")}>简明解释</button><button onClick={() => void openFormula(element, "deep")}>深入解释</button></> : <button disabled={busy} onClick={() => void explainElement(element)}>解释{element.kind === "table" ? "表格" : "图片"}</button>}</div>
       </div>;
       const p = item.paragraph!;
       return <div key={p.id} data-para={p.id} className={`translation-paragraph ${p.id === snapshot.paragraphId && snapshot.status === "playing" ? "speaking" : ""} ${p.kind === "heading" ? "is-heading" : ""}`} onClick={() => locateParagraph(p)}>
@@ -541,7 +648,7 @@ export default function Reader({ paperId }: { paperId: string }) {
     {error && <div className="reader-error"><span>{error}</span><button onClick={() => setError("")}><X size={15}/></button></div>}
     <div className="reader-main">
       <div className="reading-area"><div className="reading-toolbar"><div className="page-controls"><button onClick={() => changePage(page - 1)} disabled={page <= 1}><ChevronLeft size={18}/></button><span>第 <strong>{page}</strong> / {paper.pages} 页</span><button onClick={() => changePage(page + 1)} disabled={page >= paper.pages}><ChevronRight size={18}/></button></div><div className="reading-tools"><button title="缩小" onClick={() => setZoom(v => Math.max(.6, +(v - .1).toFixed(1)))}><ZoomOut size={17}/></button><span>{Math.round(zoom * 100)}%</span><button title="放大" onClick={() => setZoom(v => Math.min(1.6, +(v + .1).toFixed(1)))}><ZoomIn size={17}/></button><button title="查找论文文字" onClick={() => setSearchOpen(value => !value)}><Search size={17}/></button><button title="安全重新解析：保留段落 ID、译文和笔记" disabled={reparsing} onClick={() => void reparsePaper()}>{reparsing ? "解析中…" : "重新解析"}</button>{searchOpen && <input className="reader-search" autoFocus value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setSearchIndex(0); if (!e.target.value.trim()) setTargetParagraph(null); }} onKeyDown={e => { if (e.key === "Enter") findText(); if (e.key === "Escape") setSearchOpen(false); }} placeholder="搜索原文或译文"/>}</div></div>
-        {selectedElement && <div className="pdf-object-toolbar"><span>第 {selectedElement.page} 页 · {selectedElement.kind === "equation" ? "公式" : selectedElement.kind === "table" ? "表格" : "图片"} · 需核对原图</span><button disabled={busy} onClick={() => void explainElement(selectedElement)}>解释{selectedElement.kind === "equation" ? "公式" : selectedElement.kind === "table" ? "表格" : "图片"}</button><button aria-label="关闭对象工具栏" onClick={() => setSelectedElementId(null)}><X size={13}/></button></div>}
+        {selectedElement && <div className="pdf-object-toolbar"><span>第 {selectedElement.page} 页 · {selectedElement.kind === "equation" ? "公式" : selectedElement.kind === "table" ? "表格" : "图片"} · 需核对原图</span>{selectedElement.kind === "equation" ? <><button onClick={() => void openFormula(selectedElement, "brief")}>简明</button><button onClick={() => void openFormula(selectedElement, "deep")}>深入</button></> : <button disabled={busy} onClick={() => void explainElement(selectedElement)}>解释{selectedElement.kind === "table" ? "表格" : "图片"}</button>}<button aria-label="关闭对象工具栏" onClick={() => setSelectedElementId(null)}><X size={13}/></button></div>}
         {searchOpen && searchQuery.trim() && <div className="search-results" role="region" aria-label="论文全文搜索结果">
           <div className="search-results-head"><strong>{searchHits.length} 处匹配</strong><span>英文全文 · 已有中文译文</span><button title="上一个结果" disabled={!searchHits.length} onClick={() => goToSearch(searchIndex - 1)}><ChevronLeft size={15}/></button><button title="下一个结果" disabled={!searchHits.length} onClick={() => goToSearch(searchIndex + 1)}><ChevronRight size={15}/></button><button title="清除搜索" onClick={() => { setSearchQuery(""); setTargetParagraph(null); }}><X size={15}/></button></div>
           {searchHits.length ? <div className="search-results-list">{searchHits.map((hit, index) => <button key={hit.key} className={index === searchIndex ? "active" : ""} onClick={() => goToSearch(index)}><span>第 {hit.page} 页 · {hit.source === "en" ? "原文" : "中文"}</span><small>{hit.snippet}</small></button>)}</div> : <p>没有找到结果。未翻译段落无法进行中文搜索。</p>}
@@ -560,19 +667,22 @@ export default function Reader({ paperId }: { paperId: string }) {
       {sidebar && <aside className="assistant-sidebar" style={{ width: assistantWidth, minWidth: assistantWidth }}><div className="sidebar-resizer" role="separator" aria-label="调整助手宽度" onPointerDown={beginSidebarResize}/><div className="sidebar-header"><strong>学习助手</strong><button onClick={() => setSidebar(false)} title="关闭"><X size={18}/></button></div><div className="sidebar-tabs"><button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}>AI</button><button className={tab === "notes" ? "active" : ""} onClick={() => setTab("notes")}>笔记 <span>{notes.length}</span></button><button className={tab === "vocabulary" ? "active" : ""} onClick={() => setTab("vocabulary")}>词汇 <span>{vocabulary.length}</span></button><button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>历史 <span>{history.length}</span></button><button className={tab === "quiz" ? "active" : ""} onClick={() => setTab("quiz")}>复习 <span>{quiz.length}</span></button><button className={tab === "summary" ? "active" : ""} onClick={() => setTab("summary")}>我的总结</button></div>
         {tab === "ai" && <>
           <div className="sidebar-body chat-body" ref={chatBody}>
-            {selected && <div className="context-card"><span>当前选区 · {selectionSource === "zh" ? "中文" : "英文"}</span><p>{selected.slice(0, 240)}</p></div>}
-            {!selected && current && <div className="context-card"><span>当前朗读 · 第 {current.page} 页</span><p>{current.text.slice(0, 180)}</p></div>}
+            {focusedFormula && <div className="formula-focus"><div className="formula-focus-head"><strong>公式 · 第 {focusedFormula.page} 页</strong><button onClick={() => locateElement(focusedFormula)}>定位原文</button></div><button className="formula-focus-image" onClick={() => setPreviewElementId(focusedFormula.id)} title="放大公式原图"><img src={`${API}/api/papers/${paperId}/elements/${encodeURIComponent(focusedFormula.id)}/image`} alt="公式原图"/></button><div className="formula-modes"><button className={formulaFocus?.mode === "brief" ? "active" : ""} onClick={() => void openFormula(focusedFormula, "brief")}>简明</button><button className={formulaFocus?.mode === "deep" ? "active" : ""} onClick={() => void openFormula(focusedFormula, "deep")}>深入</button></div>{formulaBusy ? <p role="status">正在核对公式与上下文… <button className="small-link" onClick={cancelFormula}>取消</button></p> : formulaReplies[`${focusedFormula.id}:${formulaFocus?.mode}`] ? <FormattedAnswer text={formulaReplies[`${focusedFormula.id}:${formulaFocus?.mode}`]}/> : <button className="small-link" onClick={() => void openFormula(focusedFormula, formulaFocus?.mode || "brief")}>重试公式解释</button>}<button className="small-link" onClick={() => questionInput.current?.focus()}>继续追问公式</button></div>}
+            {!activeReference && selected && <div className="context-card"><span>当前选区 · {selectionSource === "zh" ? "中文" : "英文"}</span><p>{selected.slice(0, 240)}</p></div>}
+            {!activeReference && !selected && current && <div className="context-card"><span>当前朗读 · 第 {current.page} 页</span><p>{current.text.slice(0, 180)}</p></div>}
             {history.length === 0 && !busy && <p className="chat-empty">询问论文中的概念、方法或结论。选中文字后可直接翻译或解释。</p>}
             {history.slice(0, 20).reverse().map(item => <div className="chat-turn" key={item.id}>
+              {item.reference && <button className="chat-source" onClick={() => locateReference(item.reference!)} title="定位这次提问的原文">{item.reference.elementId ? "论文元素" : item.reference.sourceLanguage === "zh" ? "中文选区" : "英文选区"} · 第 {item.reference.page || item.page} 页 · {item.reference.selectedText?.slice(0, 90) || "查看原文"} →</button>}
               <div className="chat-question">{item.question}</div>
               <div className="chat-answer"><FormattedAnswer text={item.answer}/>{evidenceLinks(item.evidence)}<button className="small-link" onClick={() => speakAnswer(item.answer)} title="朗读回答"><Volume2 size={14}/></button></div>
             </div>)}
-            {busy && <p className="chat-pending" role="status">正在阅读论文并生成回答…</p>}
-            {failedAsk && <button className="retry-button" onClick={() => void ask(failedAsk.question, failedAsk.task)}>重试上次提问</button>}
+            {busy && <p className="chat-pending" role="status">正在阅读论文并生成回答… <button className="small-link" onClick={cancelAsk}>取消</button></p>}
+            {failedAsk && <button className="retry-button" onClick={() => void ask(failedAsk.question, failedAsk.task, failedAsk.reference)}>重试上次提问</button>}
           </div>
           <div className="ask-box">
+            {activeReference && <div className="ask-reference"><span>{activeReference.elementId ? "公式 / 图表" : activeReference.sourceLanguage === "zh" ? "中文选区" : "英文选区"} · 第 {activeReference.page} 页</span><p>{activeReference.selectedText?.slice(0, 160) || "已关联原文位置，可继续追问"}</p><button title="移除引用" onClick={() => { setActiveReference(null); setFormulaFocus(null); }}><X size={14}/></button></div>}
             <div className="voice-language"><span>{recording ? "正在识别语音…" : "语音输入"}</span><select value={voiceLang} onChange={e => setVoiceLang(e.target.value as "zh-CN" | "en-US")}><option value="zh-CN">中文 / 中英混合</option><option value="en-US">English</option></select></div>
-            <div className="ask-entry"><textarea value={question} onChange={e => setQuestion(e.target.value)} placeholder="问问这篇论文…" onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void ask(); } }}/><div className="ask-buttons"><button className={"mic-button " + (recording ? "recording" : "")} onClick={toggleMic} title={recording ? "停止录音" : "语音提问"}>{recording ? <Square size={17}/> : <Mic size={18}/>}</button><button className="send-button" disabled={!question.trim() || busy} onClick={() => void ask()} title="发送"><Send size={17}/></button></div></div>
+            <div className="ask-entry"><textarea ref={questionInput} value={question} onChange={e => setQuestion(e.target.value)} placeholder={activeReference ? "针对所引原文提问…" : "问问这篇论文…"} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void ask(); } }}/><div className="ask-buttons"><button className={"mic-button " + (recording ? "recording" : "")} onClick={toggleMic} title={recording ? "停止录音" : "语音提问"}>{recording ? <Square size={17}/> : <Mic size={18}/>}</button><button className="send-button" disabled={!question.trim() || busy} onClick={() => void ask()} title="发送"><Send size={17}/></button></div></div>
             {voiceInterim && <div className="interim">识别中：{voiceInterim}</div>}
             {!speechRecognitionAvailable() && <div className="compat-note">当前浏览器不支持语音识别，可继续使用文字输入。</div>}
           </div>
@@ -610,6 +720,7 @@ export default function Reader({ paperId }: { paperId: string }) {
       </aside>}
     </div>
 
+    {previewElement && <div className="element-preview" role="dialog" aria-modal="true" aria-label="论文原图预览" onClick={() => setPreviewElementId(null)}><div className="element-preview-panel" onClick={event => event.stopPropagation()}><div><strong>{previewElement.kind === "equation" ? "公式" : previewElement.kind === "table" ? "表格" : "图片"} · 第 {previewElement.page} 页</strong><button onClick={() => setPreviewElementId(null)} aria-label="关闭原图预览"><X size={18}/></button></div><img src={`${API}/api/papers/${paperId}/elements/${encodeURIComponent(previewElement.id)}/image`} alt="论文原始区域放大图"/><button onClick={() => { locateElement(previewElement); setPreviewElementId(null); }}>定位到 PDF</button></div></div>}
     {selected && <div className="selection-toolbar" style={selectionPosition ? { left: selectionPosition.left, top: selectionPosition.top } : undefined}>
       <span className="selection-preview">{selected.slice(0, 42)}{selected.length > 42 ? "…" : ""}</span>
       <div className="selection-actions">
@@ -620,7 +731,7 @@ export default function Reader({ paperId }: { paperId: string }) {
         {selectionSource === "en" && <button onClick={() => void addAnnotation("underline")}><Underline size={16}/> 下划线</button>}
         <button onClick={() => void addNote()}><StickyNote size={16}/> 笔记</button>
         {selectionSource === "en" && <button onClick={() => void saveWord()} disabled={busy}>保存词汇</button>}
-        <button onClick={() => { setSidebar(true); setTab("ai"); }}><MessageCircle size={16}/> 问 AI</button>
+        <button onClick={confirmSelectionForAsk}><MessageCircle size={16}/> 问 AI</button>
         <button onClick={() => setSelected("")} title="关闭"><X size={16}/></button>
       </div>
     </div>}

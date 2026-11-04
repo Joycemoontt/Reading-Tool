@@ -59,6 +59,17 @@ class DocumentElement(Base):
     extraction_status: Mapped[str] = mapped_column(String(20), default="needs_review")
 
 
+class ElementExplanation(Base):
+    __tablename__ = "element_explanations"
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(String(36), index=True)
+    element_id: Mapped[str] = mapped_column(String(100), index=True)
+    mode: Mapped[str] = mapped_column(String(12))
+    model_name: Mapped[str] = mapped_column(String(100))
+    answer: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class Translation(Base):
     __tablename__ = "translations"
     paragraph_id: Mapped[str] = mapped_column(ForeignKey("paragraphs.id", ondelete="CASCADE"), primary_key=True)
@@ -111,6 +122,7 @@ class Interaction(Base):
     question: Mapped[str] = mapped_column(Text)
     answer: Mapped[str] = mapped_column(Text)
     evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_anchor_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     input_mode: Mapped[str] = mapped_column(String(10), default="text")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 

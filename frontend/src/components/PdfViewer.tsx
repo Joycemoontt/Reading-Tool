@@ -7,7 +7,7 @@ import { API, Annotation } from "@/lib/api";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
-export type SelectionGeometry = { text: string; rects: number[][] };
+export type SelectionGeometry = { text: string; rects: number[][]; pdfPoint?: [number, number] };
 export type PdfTarget = { id: string; bbox: number[]; boxes: number[][]; rects?: number[][]; text?: string; occurrence?: number; kind?: "search" | "note" | "paragraph" };
 
 function normalizedRects(range: Range, page: HTMLElement): number[][] {
@@ -101,7 +101,12 @@ function PdfViewer({ paperId, page, width, annotations, target, onSelection, onP
     const node = pageNode();
     if (!selection || !node || !selection.rangeCount || !node.contains(selection.anchorNode)) return;
     const text = selection.toString().trim();
-    if (text) onSelection({ text, rects: normalizedRects(selection.getRangeAt(0), node) });
+    if (text) {
+      const rects = normalizedRects(selection.getRangeAt(0), node);
+      const center = rects[0] && pageView ? [pageView[0] + (rects[0][0] + rects[0][2]) / 2 * (pageView[2] - pageView[0]),
+        pageView[1] + (rects[0][1] + rects[0][3]) / 2 * (pageView[3] - pageView[1])] as [number, number] : undefined;
+      onSelection({ text, rects, pdfPoint: center });
+    }
   };
   const onClick = (event: React.MouseEvent) => {
     if (window.getSelection()?.toString().trim() || !pageView) return;

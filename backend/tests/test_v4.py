@@ -73,7 +73,7 @@ class LayoutAndEvidenceTests(unittest.TestCase):
             return "公式用途与变量需核对原图。"
 
         with patch("app.main.generate", fake_generate):
-            result = self.client.post(self.base + f"/elements/{equation['id']}/explain")
+            result = self.client.post(self.base + f"/elements/{equation['id']}/explain?mode=deep")
         self.assertEqual(result.status_code, 200, result.text)
         self.assertIn("需核对", result.json()["answer"])
         self.assertTrue(any(item["page"] == 1 and "解释公式" in item["question"]
