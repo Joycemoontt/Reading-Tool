@@ -44,8 +44,10 @@ export default function Reader({ paperId }: { paperId: string }) {
   const [voices, setVoices] = useState<{ id: string; name: string; lang: string }[]>([]);
   const [voiceId, setVoiceId] = useState("");
   const [snapshot, setSnapshot] = useState<ReadingSnapshot>({ status: "idle", paragraphId: null, index: 0, total: 0, charIndex: 0, language: "en", speed: 1, error: null });
-  const [pdfWidth, setPdfWidth] = useState(720);
+  const [pdfWidth, setPdfWidth] = useState(0);
   const pdfContainer = useRef<HTMLDivElement>(null);
+  const selectionContext = useRef<{ page: number; paragraphs: Paragraph[] }>({ page, paragraphs });
+  selectionContext.current = { page, paragraphs };
   const translationContainer = useRef<HTMLDivElement>(null);
   const recognition = useRef<BrowserVoiceInput | null>(null);
   const provider = useMemo(() => new BrowserSpeechProvider(), []);
@@ -105,7 +107,7 @@ export default function Reader({ paperId }: { paperId: string }) {
     });
     observer.observe(pdfContainer.current);
     return () => observer.disconnect();
-  }, [zoom, mode, sidebar]);
+  }, [zoom, mode, sidebar, paper?.id]);
 
   function persistProgress(nextPage: number, nextMode: Paper["mode"]) {
     void request(`/api/papers/${paperId}/progress`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ page: nextPage, mode: nextMode }) }).catch(e => setError(e.message));
@@ -116,12 +118,13 @@ export default function Reader({ paperId }: { paperId: string }) {
   }
   function changeMode(next: Paper["mode"]) { setMode(next); persistProgress(page, next); }
 
-  function onPdfSelection(text: string) {
+  const onPdfSelection = useCallback((text: string) => {
     setSelected(text);
+    const { page, paragraphs } = selectionContext.current;
     const normalized = text.replace(/\s+/g, " ").slice(0, 60).toLowerCase();
     const match = paragraphs.find(p => p.page === page && p.text.toLowerCase().includes(normalized));
     setSelectedParagraphId(match?.id || paragraphs.find(p => p.page === page)?.id || null);
-  }
+  }, []);
 
   async function startAudio(scope: ReadingScope, anchor?: string) {
     setError("");
@@ -260,7 +263,7 @@ export default function Reader({ paperId }: { paperId: string }) {
     {error && <div className="reader-error"><span>{error}</span><button onClick={() => setError("")}><X size={15}/></button></div>}
     <div className="reader-main">
       <div className="reading-area"><div className="reading-toolbar"><div className="page-controls"><button onClick={() => changePage(page - 1)} disabled={page <= 1}><ChevronLeft size={18}/></button><span>第 <strong>{page}</strong> / {paper.pages} 页</span><button onClick={() => changePage(page + 1)} disabled={page >= paper.pages}><ChevronRight size={18}/></button></div><div className="reading-tools"><button title="缩小" onClick={() => setZoom(v => Math.max(.6, +(v - .1).toFixed(1)))}><ZoomOut size={17}/></button><span>{Math.round(zoom * 100)}%</span><button title="放大" onClick={() => setZoom(v => Math.min(1.6, +(v + .1).toFixed(1)))}><ZoomIn size={17}/></button><button title="查找当前页文本" onClick={() => { const query = prompt("查找论文文字："); if (!query) return; const match = paragraphs.find(p => p.text.toLowerCase().includes(query.toLowerCase())); if (match) changePage(match.page); else setError("未找到匹配文字"); }}><Search size={17}/></button></div></div>
-        <div className={`reading-columns mode-${mode}`}><div className="pdf-scroll" ref={pdfContainer}><PdfViewer paperId={paperId} page={page} width={pdfWidth} annotations={annotations} onSelection={onPdfSelection}/></div>
+        <div className={`reading-columns mode-${mode}`}><div className="pdf-scroll" ref={pdfContainer}>{pdfWidth > 0 ? <PdfViewer paperId={paperId} page={page} width={pdfWidth} annotations={annotations} onSelection={onPdfSelection}/> : <div className="pdf-loading">正在准备 PDF…</div>}</div>
           {mode !== "original" && <div className="translation-scroll" ref={translationContainer}><div className="translation-heading"><div><span className="eyebrow">{mode === "dual" ? "CHINESE TRANSLATION" : "PARAGRAPH READING"}</span><h3>{mode === "dual" ? "中文对照" : "段落对照"}</h3></div><span>{translatedCount}/{paragraphs.length}</span></div>
             {paragraphs.length === 0 && <div className="translation-empty">没有提取到可阅读文本。这份 PDF 可能是扫描件；原版 PDF 仍可阅读。</div>}
             {paragraphs.map(p => <div key={p.id} data-para={p.id} className={`translation-paragraph ${p.id === snapshot.paragraphId && snapshot.status === "playing" ? "speaking" : ""} ${p.kind === "heading" ? "is-heading" : ""}`} onClick={() => { changePage(p.page); setSelectedParagraphId(p.id); }}>

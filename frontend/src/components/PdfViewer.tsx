@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/esm/Page/AnnotationLayer.css";
 import "react-pdf/dist/esm/Page/TextLayer.css";
@@ -12,7 +12,7 @@ function escapeHtml(text: string) {
   return text.replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
 }
 
-export default function PdfViewer({ paperId, page, width, annotations, onSelection }: {
+function PdfViewer({ paperId, page, width, annotations, onSelection }: {
   paperId: string; page: number; width: number; annotations: Annotation[]; onSelection: (text: string) => void;
 }) {
   const [error, setError] = useState("");
@@ -32,3 +32,5 @@ export default function PdfViewer({ paperId, page, width, annotations, onSelecti
     <Page pageNumber={page} width={width} renderTextLayer renderAnnotationLayer customTextRenderer={renderText}/>
   </Document>{error && <div className="error-box">PDF 加载失败：{error}</div>}</div>;
 }
+
+export default memo(PdfViewer);
