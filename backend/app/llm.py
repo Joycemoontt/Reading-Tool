@@ -33,17 +33,23 @@ async def generate(prompt: str, json_mode: bool = False) -> str:
                         response_mime_type="application/json" if json_mode else "text/plain",
                     ),
                 )
-            response = await asyncio.to_thread(call)
+            response = await asyncio.wait_for(asyncio.to_thread(call), timeout=60)
             if not response.text:
                 raise HTTPException(502, "Gemini 没有返回文本")
             return response.text
         except HTTPException:
             raise
+        except TimeoutError as exc:
+            raise HTTPException(504, "Gemini 响应超时，请重试") from exc
         except Exception as exc:
-            message = str(exc)
-            if "429" in message or "quota" in message.lower():
+            message = str(exc).lower()
+            if "429" in message or "quota" in message:
                 raise HTTPException(429, "Gemini 免费额度或速率限制已达到，请稍后重试") from exc
-            raise HTTPException(502, f"Gemini 请求失败：{message[:180]}") from exc
+            if "401" in message or "403" in message or "api key" in message:
+                raise HTTPException(502, "Gemini 认证失败，请检查后端 API Key") from exc
+            if "404" in message or "model" in message and "not found" in message:
+                raise HTTPException(502, "Gemini 模型不可用，请检查后端 GEMINI_MODEL") from exc
+            raise HTTPException(502, "Gemini 请求失败，请检查网络连接并稍后重试") from exc
 
 
 async def translate_batch(items: list[dict]) -> dict[str, str]:

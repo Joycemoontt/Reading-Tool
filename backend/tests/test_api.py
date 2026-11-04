@@ -40,6 +40,7 @@ class PaperMindApiTests(unittest.TestCase):
         paragraphs = self.client.get(self.base + "/paragraphs").json()
         self.assertGreaterEqual(len(paragraphs), 2)
         self.assertIn("latent dynamics", " ".join(p["text"] for p in paragraphs))
+        self.assertTrue(all(p["boxes"] for p in paragraphs))
         self.assertEqual(self.client.get(self.base + "/file").content[:4], b"%PDF")
         response = self.client.put(self.base + "/progress", json={"page": 1, "mode": "paragraph"})
         self.assertEqual(response.status_code, 200)

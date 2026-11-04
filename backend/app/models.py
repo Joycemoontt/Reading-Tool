@@ -15,7 +15,15 @@ class Paper(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     title: Mapped[str] = mapped_column(String(500))
     filename: Mapped[str] = mapped_column(String(500))
+    folder_id: Mapped[str | None] = mapped_column(ForeignKey("folders.id", ondelete="SET NULL"), nullable=True, index=True)
     pages: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Folder(Base):
+    __tablename__ = "folders"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -32,6 +40,7 @@ class Paragraph(Base):
     x1: Mapped[float] = mapped_column(Float)
     y1: Mapped[float] = mapped_column(Float)
     kind: Mapped[str] = mapped_column(String(20), default="body")
+    line_boxes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Translation(Base):
@@ -58,6 +67,8 @@ class Annotation(Base):
     text: Mapped[str] = mapped_column(Text)
     color: Mapped[str] = mapped_column(String(20), default="yellow")
     kind: Mapped[str] = mapped_column(String(20), default="highlight")
+    rects_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(2), default="en")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
