@@ -1,0 +1,119 @@
+from datetime import datetime, timezone
+
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column
+
+from .database import Base
+
+
+def now():
+    return datetime.now(timezone.utc)
+
+
+class Paper(Base):
+    __tablename__ = "papers"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    title: Mapped[str] = mapped_column(String(500))
+    filename: Mapped[str] = mapped_column(String(500))
+    pages: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Paragraph(Base):
+    __tablename__ = "paragraphs"
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
+    page: Mapped[int] = mapped_column(Integer)
+    order: Mapped[int] = mapped_column(Integer)
+    section_id: Mapped[str] = mapped_column(String(80))
+    text: Mapped[str] = mapped_column(Text)
+    x0: Mapped[float] = mapped_column(Float)
+    y0: Mapped[float] = mapped_column(Float)
+    x1: Mapped[float] = mapped_column(Float)
+    y1: Mapped[float] = mapped_column(Float)
+    kind: Mapped[str] = mapped_column(String(20), default="body")
+
+
+class Translation(Base):
+    __tablename__ = "translations"
+    paragraph_id: Mapped[str] = mapped_column(ForeignKey("paragraphs.id", ondelete="CASCADE"), primary_key=True)
+    text: Mapped[str] = mapped_column(Text)
+
+
+class SpeechText(Base):
+    __tablename__ = "speech_texts"
+    __table_args__ = (UniqueConstraint("paragraph_id", "language"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    paragraph_id: Mapped[str] = mapped_column(ForeignKey("paragraphs.id", ondelete="CASCADE"), index=True)
+    language: Mapped[str] = mapped_column(String(2))
+    text: Mapped[str] = mapped_column(Text)
+
+
+class Annotation(Base):
+    __tablename__ = "annotations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
+    paragraph_id: Mapped[str | None] = mapped_column(ForeignKey("paragraphs.id", ondelete="SET NULL"), nullable=True)
+    page: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    color: Mapped[str] = mapped_column(String(20), default="yellow")
+    kind: Mapped[str] = mapped_column(String(20), default="highlight")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Note(Base):
+    __tablename__ = "notes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
+    paragraph_id: Mapped[str | None] = mapped_column(ForeignKey("paragraphs.id", ondelete="SET NULL"), nullable=True)
+    page: Mapped[int] = mapped_column(Integer)
+    selected_text: Mapped[str] = mapped_column(Text, default="")
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Interaction(Base):
+    __tablename__ = "interactions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
+    paragraph_id: Mapped[str | None] = mapped_column(ForeignKey("paragraphs.id", ondelete="SET NULL"), nullable=True)
+    page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    question: Mapped[str] = mapped_column(Text)
+    answer: Mapped[str] = mapped_column(Text)
+    input_mode: Mapped[str] = mapped_column(String(10), default="text")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ReadingProgress(Base):
+    __tablename__ = "reading_progress"
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True)
+    page: Mapped[int] = mapped_column(Integer, default=1)
+    mode: Mapped[str] = mapped_column(String(20), default="dual")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AudioProgress(Base):
+    __tablename__ = "audio_progress"
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True)
+    paragraph_id: Mapped[str] = mapped_column(String(80))
+    section_id: Mapped[str] = mapped_column(String(80))
+    char_index: Mapped[int] = mapped_column(Integer, default=0)
+    language: Mapped[str] = mapped_column(String(2), default="en")
+    speed: Mapped[float] = mapped_column(Float, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Vocabulary(Base):
+    __tablename__ = "vocabulary"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
+    paragraph_id: Mapped[str | None] = mapped_column(ForeignKey("paragraphs.id", ondelete="SET NULL"), nullable=True)
+    page: Mapped[int] = mapped_column(Integer)
+    word: Mapped[str] = mapped_column(String(200))
+    meaning: Mapped[str] = mapped_column(Text)
+    context: Mapped[str] = mapped_column(Text, default="")
+    source_sentence: Mapped[str] = mapped_column(Text, default="")
+    review_status: Mapped[str] = mapped_column(String(20), default="new")
+    interval_days: Mapped[int] = mapped_column(Integer, default=0)
+    next_review_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

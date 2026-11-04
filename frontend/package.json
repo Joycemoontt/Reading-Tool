@@ -1,0 +1,25 @@
+{
+  "name": "papermind-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --webpack --hostname 127.0.0.1",
+    "build": "next build --webpack",
+    "start": "next start --hostname 127.0.0.1",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "1.7.0",
+    "next": "^16.4.5",
+    "pdfjs-dist": "^4.8.69",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-pdf": "^9.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.9.3"
+  }
+}
